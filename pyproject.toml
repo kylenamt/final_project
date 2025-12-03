@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "timbre-transfer-ddsp"
+version = "0.1.0"
+description = "DDSP-based timbre transfer experiments"
+readme = "README.md"
+requires-python = "<3.11"
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "ipykernel>=6.25",
+    "ddsp>=3.0.0",
+    "scipy",
+    "tqdm>=4.66",
+    "pyworld"
+    #"torch>=2.7.0",
+    #"torchaudio>=2.7.0",
+    #"librosa<=0.10",
+    #"soundfile>=0.12",
+]
+
