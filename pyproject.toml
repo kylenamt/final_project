@@ -23,6 +23,5 @@ dependencies = [
     "librosa"
     #"torch>=2.7.0",
     #"torchaudio>=2.7.0",
-    #"soundfile>=0.12",
 ]
 
