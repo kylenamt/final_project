@@ -7,3 +7,8 @@ this project uses anaconda
 conda create -n conda_env3.10 python=3.10
 conda activate conda_env3.10
 ```
+
+Then, install dependencies:
+```{bash}
+pip install -e .
+```

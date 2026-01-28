@@ -1,3 +1,11 @@
 .venv*
 *.egg-info
 __pycache__/
+
+# Data and artifacts
+data*/
+artifacts/
+
+# Checkpoints and logs
+*.ckpt
+*.tfevents*
