@@ -4,11 +4,11 @@ set -euo pipefail
 MODE="${MODE:-train}"
 TFRECORD_PATH="${TFRECORD_PATH:-data/ddsp_data/vocalset.tfrecord}"
 SAVE_DIR="${SAVE_DIR:-artifacts/ddsp_runs/vocalset}"
-BATCH_SIZE="${BATCH_SIZE:-16}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
 GIN_MODEL="${GIN_MODEL:-models/solo_instrument.gin}"
 GIN_DATASET="${GIN_DATASET:-datasets/tfrecord.gin}"
 GIN_EVAL="${GIN_EVAL:-eval/basic_f0_ld.gin}"
-GIN_SEARCH_PATH="${GIN_SEARCH_PATH:-}"
+GIN_SEARCH_PATH="${GIN_SEARCH_PATH:-configs/ddsp_gin}"
 EXTRA_GIN_PARAMS="${EXTRA_GIN_PARAMS:-}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
@@ -48,7 +48,7 @@ if [[ -n "${GIN_SEARCH_PATH}" ]]; then
   done
 else
   echo "GIN_SEARCH_PATH is empty and DDSP gin directory could not be detected." >&2
-  echo "Set GIN_SEARCH_PATH to the ddsp/training/gin directory in your conda env." >&2
+  echo "Set GIN_SEARCH_PATH to configs/ddsp_gin or ddsp/training/gin in your env." >&2
   exit 1
 fi
 

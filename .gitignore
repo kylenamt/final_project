@@ -9,3 +9,4 @@ artifacts/
 # Checkpoints and logs
 *.ckpt
 *.tfevents*
+*.run
