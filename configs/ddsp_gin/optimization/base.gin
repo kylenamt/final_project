@@ -4,7 +4,7 @@ import ddsp.training
 
 # Globals for easier configuration with --gin_param
 learning_rate = 3e-4
-batch_size = 32
+batch_size = 8
 
 train.batch_size = %batch_size
 train.num_steps = 1000000

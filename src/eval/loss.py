@@ -1,83 +1,166 @@
 import numpy as np
-import librosa
+import crepe
+from scipy.signal import resample_poly
+from math import gcd
 
-class Loss:
+try:
+    # pip install frechet-audio-distance
+    from frechet_audio_distance import FrechetAudioDistance
+except Exception:  # pragma: no cover
+    FrechetAudioDistance = None  # type: ignore
+
+def _to_numpy(x: np.ndarray) -> np.ndarray:
+    if not isinstance(x, np.ndarray):
+        raise TypeError(f"Expected np.ndarray, got {type(x)}")
+    return x.astype(np.float64, copy=False)
+
+def resample_to_16k(audio: np.ndarray, sr: int) -> np.ndarray:
+    """Resample mono audio to 16 kHz using polyphase resampling."""
+    if sr == 16000:
+        return audio.astype(np.float32, copy=False)
+    g = gcd(sr, 16000)
+    up = 16000 // g
+    down = sr // g
+    return resample_poly(audio, up, down).astype(np.float32, copy=False)
+
+def crepe_f0_hz(
+    audio: np.ndarray,
+    sr: int,
+    step_size_ms: int = 10,     # 10 ms hop (common)
+    model_capacity: str = "tiny",  # "tiny" | "small" | "medium" | "large" | "full"
+    viterbi: bool = True,
+    conf_threshold: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    A class to compute a combination of different loss functions.
+    Returns:
+      time_s: (T,)
+      f0_hz:  (T,) with unvoiced set to 0.0 based on conf_threshold
+      conf:   (T,) CREPE confidence
     """
-    def __init__(self, loss_types=['spectral'], fft_size=2048, hop_size=512, win_size=2048):
-        """
-        Initializes the Loss class.
+    if audio.ndim != 1:
+        raise ValueError("audio must be mono 1D waveform")
 
-        Args:
-            loss_types (list): A list of strings specifying which losses to compute. 
-                               Available options: 'spectral'.
-            fft_size (int): FFT size for spectral loss.
-            hop_size (int): Hop size for spectral loss.
-            win_size (int): Window size for spectral loss.
-        """
-        self.loss_types = loss_types
-        self.fft_size = fft_size
-        self.hop_size = hop_size
-        self.win_size = win_size
-        
-        # Dictionary to map loss type strings to their respective methods
-        self.loss_functions = {
-            'spectral': self._spectral_loss
-        }
+    x16 = resample_to_16k(audio, sr)
 
-    def _spectral_loss(self, y_true, y_pred):
-        """
-        Computes the spectral loss (sum of log-magnitude differences).
-        """
-        true_stft = librosa.stft(y_true,
-                                 n_fft=self.fft_size,
-                                 hop_length=self.hop_size,
-                                 win_length=self.win_size)
-        
-        pred_stft = librosa.stft(y_pred,
-                                 n_fft=self.fft_size,
-                                 hop_length=self.hop_size,
-                                 win_length=self.win_size)
+    # CREPE expects float32 in [-1, 1] ideally
+    x16 = np.clip(x16, -1.0, 1.0).astype(np.float32, copy=False)
 
-        true_mag = np.abs(true_stft)
-        pred_mag = np.abs(pred_stft)
+    time_s, f0_hz, conf, _ = crepe.predict(
+        x16,
+        16000,
+        step_size=step_size_ms,
+        model_capacity=model_capacity,
+        viterbi=viterbi,
+        verbose=0,
+    )
 
-        # Add a small epsilon to avoid log(0)
-        loss = np.mean(np.abs(np.log(true_mag + 1e-8) - np.log(pred_mag + 1e-8)))
-        
-        return loss
+    f0_hz = f0_hz.astype(np.float64, copy=False)
+    conf = conf.astype(np.float64, copy=False)
 
-    def __call__(self, y_true, y_pred):
-        """
-        Computes the total loss by summing the specified individual losses.
+    # Voicing decision from confidence
+    voiced = conf >= conf_threshold
+    f0_hz = np.where(voiced, f0_hz, 0.0)
 
-        Args:
-            y_true: The ground truth audio signal.
-            y_pred: The predicted audio signal.
+    return time_s, f0_hz, conf
 
-        Returns:
-            A dictionary containing the total loss and individual loss values.
-        """
-        total_loss = 0.0
-        loss_dict = {}
 
-        for loss_type in self.loss_types:
-            if loss_type in self.loss_functions:
-                loss_value = self.loss_functions[loss_type](y_true, y_pred)
-                total_loss += loss_value
-                loss_dict[f'{loss_type}_loss'] = loss_value
-            else:
-                raise ValueError(f"Unknown loss type: {loss_type}")
-        
-        loss_dict['total_loss'] = total_loss
-        return loss_dict
+class SNR:
+    """Signal-to-noise ratio metric.
+    Input: ref_audio, reference audio as numpy array
+        est_audio, reconstructed audio as numpy array
+    """
+    def __call__(self, ref_audio: np.ndarray, est_audio: np.ndarray, eps: float = 1e-12) -> float:
+        r = _to_numpy(ref_audio)
+        e = _to_numpy(est_audio)
+        if r.shape != e.shape:
+            raise ValueError(f"ref and est must have same shape: {r.shape} vs {e.shape}")
 
-# Example Usage:
-#
-# loss_computer = Loss(loss_types=['spectral'])
-# y_true_audio = ... # your ground truth audio tensor
-# y_pred_audio = ... # your predicted audio tensor
-# losses = loss_computer(y_true_audio, y_pred_audio)
-# print(losses) 
-# # Output would be something like: {'spectral_loss': <tf.Tensor>, 'total_loss': <tf.Tensor>}
+        num = np.sum(r ** 2)
+        den = np.sum((r - e) ** 2)
+        return float(10.0 * np.log10((num + eps) / (den + eps)))
+
+
+class Pitch_centRMSE:
+    """Frame-wise pitch RMSE in cents from audio via CREPE.
+
+    Input: ref_audio and est_audio (mono waveforms).
+    Voicing decision: frames with CREPE confidence < conf_threshold
+    or f0 <= voiced_threshold_hz are excluded.
+    """
+
+    def __call__(
+        self,
+        ref_audio: np.ndarray,
+        est_audio: np.ndarray,
+        sr: int,
+        voiced_threshold_hz: float = 1.0,
+        conf_threshold: float = 0.5,
+        step_size_ms: int = 10,
+        model_capacity: str = "tiny",
+        viterbi: bool = True,
+        eps: float = 1e-12,
+    ) -> float:
+        r_audio = _to_numpy(ref_audio).reshape(-1)
+        e_audio = _to_numpy(est_audio).reshape(-1)
+
+        _, f0_ref, _ = crepe_f0_hz(
+            r_audio,
+            sr,
+            step_size_ms=step_size_ms,
+            model_capacity=model_capacity,
+            viterbi=viterbi,
+            conf_threshold=conf_threshold,
+        )
+        _, f0_est, _ = crepe_f0_hz(
+            e_audio,
+            sr,
+            step_size_ms=step_size_ms,
+            model_capacity=model_capacity,
+            viterbi=viterbi,
+            conf_threshold=conf_threshold,
+        )
+
+        r = _to_numpy(f0_ref).reshape(-1)
+        e = _to_numpy(f0_est).reshape(-1)
+        n_frames = min(len(r), len(e))
+        r = r[:n_frames]
+        e = e[:n_frames]
+
+        voiced = (r > voiced_threshold_hz) & (e > voiced_threshold_hz)
+        if not np.any(voiced):
+            return 0.0
+
+        err_cents = 1200.0 * np.log2((e[voiced] + eps) / (r[voiced] + eps))
+        rmse_cents = np.sqrt(np.mean(err_cents ** 2))
+        return float(rmse_cents)
+
+
+class FAD:
+    """Frechet Audio Distance for directories of audio clips."""
+
+    def __init__(
+        self,
+        model_name: str = "vggish",
+        sample_rate: int = 16000,
+        use_pca: bool = True,
+        use_activation: bool = True,
+    ) -> None:
+        self.model_name = model_name
+        self.sample_rate = sample_rate
+        self.use_pca = use_pca
+        self.use_activation = use_activation
+
+    def __call__(self, real_dir: str, gen_dir: str) -> float:
+        if FrechetAudioDistance is None:
+            raise ImportError(
+                "frechet-audio-distance is not installed. Install with: pip install frechet-audio-distance"
+            )
+        fad = FrechetAudioDistance(
+            model_name=self.model_name,
+            sample_rate=self.sample_rate,
+            use_pca=self.use_pca,
+            use_activation=self.use_activation,
+        )
+        return float(fad.score(background_dir=real_dir, eval_dir=gen_dir))
+
+

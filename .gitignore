@@ -3,7 +3,7 @@
 __pycache__/
 
 # Data and artifacts
-# data*/
+data/tfrecords/*
 artifacts/
 
 # Checkpoints and logs

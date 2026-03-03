@@ -22,3 +22,13 @@ def plot_spectrograms(audios, fs):
     plt.tight_layout()
     plt.show()
     
+def plot_features(audio_features, trim=-15):
+    fig, ax = plt.subplots(nrows=3, ncols=1, sharex=True, figsize=(6, 6))
+    ax[0].plot(audio_features['loudness_db'][:trim])
+    ax[0].set_ylabel('loudness_db')
+    ax[1].plot(librosa.hz_to_midi(audio_features['f0_hz'][:trim]))
+    ax[1].set_ylabel('f0 [midi]')
+    ax[2].plot(audio_features['f0_confidence'][:trim])
+    ax[2].set_ylabel('f0 confidence')
+    ax[2].set_xlabel('frame')
+    plt.show()
