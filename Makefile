@@ -1,25 +1,31 @@
 SHELL := /bin/bash
 
 INPUT_PATTERN ?= data/preprocessed/solo_violin/*.wav
-OUTPUT_TFRECORD ?= data/tfrecords/solo_violin/
+OUTPUT_TFRECORD ?= data/tfrecords/solo_violin/solo_violin.tfrecord
 TFRECORD_PATH ?= data/tfrecords/solo_violin/*.tfrecord
 
 # SAMPLE_PATH ?= data/voice/forte/*.wav
 # SAMPLE_TFRECORD ?= data/voice/*.tfrecord
 
-SAVE_DIR ?= artifacts/trained_models/
-SAVE_DIR_NO_REVERB ?= artifacts/trained_noreverb/
+SAVE_DIR ?= artifacts/ae/
+MODEL_DIR ?= artifacts/ae/
+# PATH_IN_REPO ?= trained_noreverb
+# HF_REPO ?=
 
 BATCH_SIZE ?= 8
 
-GIN_MODEL ?= models/solo_instrument.gin
+GIN_MODEL ?= models/ae.gin
 GIN_DATASET ?= datasets/tfrecord.gin
 GIN_EVAL ?= eval/basic_f0_ld.gin
 GIN_SEARCH_PATH ?= configs/ddsp_gin
 
 PYTHON ?= python
 
-.PHONY: help prepare prepare-input train eval sample
+.PHONY: help setup prepare prepare-input train eval sample
+
+setup:
+	conda env create -f environment.yml || conda env update -f environment.yml
+	@echo "Done. Activate with:  conda activate conda_env3.10"
 
 help:
 	@echo "Targets:"
@@ -28,9 +34,11 @@ help:
 	@echo "  train    - Train DDSP model"
 	@echo "  eval     - Evaluate DDSP model"
 	@echo "  sample   - Sample from DDSP model"
+	@echo "  upload-hf - Upload latest checkpoint + gin to Hugging Face"
 	@echo "Variables (override with VAR=...):"
 	@echo "  INPUT_PATTERN, OUTPUT_TFRECORD, TFRECORD_PATH, SAVE_DIR, BATCH_SIZE"
 	@echo "  GIN_MODEL, GIN_DATASET, GIN_EVAL, GIN_SEARCH_PATH, PYTHON"
+	@echo "  HF_REPO, MODEL_DIR, PATH_IN_REPO"
 
 
 prepare:
@@ -47,21 +55,21 @@ prepare-sample:
 		--num_shards=10 \
 		--alsologtostderr
 
-train-reverb:
+# train-reverb:
+# 	TFRECORD_PATH="$(TFRECORD_PATH)" \
+# 	SAVE_DIR="$(SAVE_DIR)" \
+# 	BATCH_SIZE="$(BATCH_SIZE)" \
+# 	GIN_MODEL="$(GIN_MODEL)" \
+# 	GIN_DATASET="$(GIN_DATASET)" \
+# 	GIN_EVAL="$(GIN_EVAL)" \
+# 	GIN_SEARCH_PATH="$(GIN_SEARCH_PATH)" \
+# 	PYTHON_BIN="$(PYTHON)" \
+# 	MODE=train \
+# 	bash scripts/train_ddsp.sh
+
+train:
 	TFRECORD_PATH="$(TFRECORD_PATH)" \
 	SAVE_DIR="$(SAVE_DIR)" \
-	BATCH_SIZE="$(BATCH_SIZE)" \
-	GIN_MODEL="$(GIN_MODEL)" \
-	GIN_DATASET="$(GIN_DATASET)" \
-	GIN_EVAL="$(GIN_EVAL)" \
-	GIN_SEARCH_PATH="$(GIN_SEARCH_PATH)" \
-	PYTHON_BIN="$(PYTHON)" \
-	MODE=train \
-	bash scripts/train_ddsp.sh
-
-train-no-reverb:
-	TFRECORD_PATH="$(TFRECORD_PATH)" \
-	SAVE_DIR="$(SAVE_DIR_NO_REVERB)" \
 	BATCH_SIZE="$(BATCH_SIZE)" \
 	GIN_MODEL="$(GIN_MODEL)" \
 	GIN_DATASET="$(GIN_DATASET)" \
@@ -94,3 +102,9 @@ sample:
 	PYTHON_BIN="$(PYTHON)" \
 	MODE=sample \
 	bash scripts/train_ddsp.sh
+
+upload-hf:
+	$(PYTHON) scripts/upload_to_hf.py \
+		--repo "$(HF_REPO)" \
+		--model-dir "$(MODEL_DIR)" \
+		--path-in-repo "$(PATH_IN_REPO)"
