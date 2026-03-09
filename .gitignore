@@ -3,7 +3,7 @@
 __pycache__/
 
 # Data and artifacts
-data/tfrecords/*
+# data/tfrecords/ -- tracked via Git LFS
 data/processed
 artifacts/
 
