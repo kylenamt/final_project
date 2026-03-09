@@ -1,0 +1,14 @@
+name: conda_env3.10
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  # CUDA / cuDNN — pinned to avoid version-mismatch crashes
+  - cudatoolkit=11.2
+  - cudnn=8.9.7
+  # Everything else is installed via pip (pyproject.toml)
+  - pip
+  - pip:
+      - -e .
