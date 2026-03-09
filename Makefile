@@ -21,16 +21,22 @@ GIN_SEARCH_PATH ?= configs/ddsp_gin
 
 PYTHON ?= python
 
-.PHONY: help setup prepare prepare-input train eval sample
+.PHONY: help setup lock prepare prepare-input train eval sample
 
 setup:
 	conda env create -f environment.yml || conda env update -f environment.yml
 	@echo "Done. Activate with:  conda activate conda_env3.10"
 
+lock:
+	conda list --export > conda-lock.txt
+	pip freeze > requirements-lock.txt
+	@echo "Lock files updated: conda-lock.txt, requirements-lock.txt"
+
 help:
 	@echo "Targets:"
+	@echo "  setup    - Create/update conda env from environment.yml"
+	@echo "  lock     - Regenerate conda-lock.txt & requirements-lock.txt"
 	@echo "  prepare  - Build TFRecord dataset from INPUT_PATTERN"
-	@echo "  prepare-input  - Build TFRecord dataset from INPUT_PATTERN (input-only)"
 	@echo "  train    - Train DDSP model"
 	@echo "  eval     - Evaluate DDSP model"
 	@echo "  sample   - Sample from DDSP model"
