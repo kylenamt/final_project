@@ -1,14 +1,14 @@
 SHELL := /bin/bash
 
-INPUT_PATTERN ?= data/preprocessed/solo_violin/*.wav
+INPUT_PATTERN ?= data/raw/solo_violin/*.wav
 OUTPUT_TFRECORD ?= data/tfrecords/solo_violin/solo_violin.tfrecord
 TFRECORD_PATH ?= data/tfrecords/solo_violin/*.tfrecord
 
 # SAMPLE_PATH ?= data/voice/forte/*.wav
 # SAMPLE_TFRECORD ?= data/voice/*.tfrecord
 
-SAVE_DIR ?= artifacts/ae/
-MODEL_DIR ?= artifacts/ae/
+SAVE_DIR ?= artifacts/ae2/
+MODEL_DIR ?= artifacts/ae2/
 # PATH_IN_REPO ?= trained_noreverb
 # HF_REPO ?=
 

@@ -9,6 +9,8 @@ import os
 import re
 from typing import Dict, Iterable, Optional
 
+import tensorflow.compat.v2 as tf # type: ignore
+
 import gin
 import ddsp.training
 
@@ -88,6 +90,18 @@ def find_latest_checkpoint(model_dir: str) -> str:
     return os.path.join(model_dir, f"ckpt-{max(steps)}")
 
 
+def restore_autoencoder(model_dir: str):
+    """Instantiate and restore a DDSP Autoencoder from ``model_dir``.
+
+    Expects gin config to be parsed by the caller when shape-dependent
+    overrides are needed (e.g., timbre transfer inference).
+    """
+    model = ddsp.training.models.Autoencoder() # type: ignore
+    ckpt_path = find_latest_checkpoint(model_dir)
+    model.restore(ckpt_path) # type: ignore
+    return model
+
+
 # ---------------------------------------------------------------------------
 # Full model loading
 # ---------------------------------------------------------------------------
@@ -107,9 +121,8 @@ def load_ddsp_model(
         gin.clear_config()
         gin.parse_config_file(gin_path, skip_unknown=True)
 
-    model = ddsp.training.models.Autoencoder()
+    model = restore_autoencoder(model_dir)
     ckpt_path = find_latest_checkpoint(model_dir)
-    model.restore(ckpt_path)
 
     return {
         "model": model,
@@ -127,3 +140,60 @@ def load_models(
         os.path.basename(os.path.abspath(p)): load_ddsp_model(p, gin_file=gin_file)
         for p in model_paths
     }
+
+
+# ---------------------------------------------------------------------------
+# Pretrained model loading (from GCS)
+# ---------------------------------------------------------------------------
+
+PRETRAINED_MODELS = ("Violin", "Flute", "Flute2", "Trumpet", "Tenor_Saxophone")
+GCS_CKPT_DIR = "gs://ddsp/models/timbre_transfer_colab/2021-07-08"
+
+
+def load_pretrained_model(
+    model_name: str,
+    local_dir: str = "artifacts/pretrained",
+) -> Dict[str, str]:
+    """Download a pretrained DDSP model from Google Cloud Storage.
+
+    Uses ``tf.io.gfile`` for GCS access (no ``gsutil`` needed).
+    Files are cached locally; subsequent calls skip the download.
+
+    Parameters
+    ----------
+    model_name : str
+        One of ``Violin``, ``Flute``, ``Flute2``, ``Trumpet``,
+        ``Tenor_Saxophone``.
+    local_dir : str
+        Local directory to cache downloaded files.
+
+    Returns
+    -------
+    dict
+        Keys: ``model_dir``, ``gin_file``.
+    """
+    import shutil
+
+    if model_name not in PRETRAINED_MODELS:
+        raise ValueError(
+            f"Unknown model '{model_name}'. Choose from: {PRETRAINED_MODELS}"
+        )
+
+    model_dir = os.path.join(local_dir, model_name)
+    gcs_path = f"{GCS_CKPT_DIR}/solo_{model_name.lower()}_ckpt"
+    gin_file = os.path.join(model_dir, "operative_config-0.gin")
+
+    # Download from GCS if not already cached
+    if not os.path.isfile(gin_file):
+        if os.path.isdir(model_dir):
+            shutil.rmtree(model_dir)
+        os.makedirs(model_dir, exist_ok=True)
+
+        remote_files = tf.io.gfile.listdir(gcs_path)
+        for fname in remote_files:
+            src = f"{gcs_path}/{fname}"
+            dst = os.path.join(model_dir, fname)
+            tf.io.gfile.copy(src, dst, overwrite=True)
+        print(f"Downloaded {len(remote_files)} files from {gcs_path}")
+
+    return {"model_dir": model_dir, "gin_file": gin_file}

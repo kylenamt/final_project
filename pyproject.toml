@@ -10,24 +10,23 @@ readme = "README.md"
 requires-python = "<3.11"
 
 dependencies = [
+    "pytimbre==1.0.2.2",
     "numpy",
     "pandas",
     "matplotlib",
-    "ipykernel>=6.25",
-    #"libsndfile-dev",
+    "ipykernel",
     "ddsp>=3.6.0",
     "scipy",
-    "tqdm>=4.66",
     "pyworld",
-    "pydub",
     "soundfile",
     "librosa",
     "apache-beam",
     "tensorflow[and-cuda]==2.11.1",
     "tensorflow-probability==0.19.0",
     "frechet_audio_distance",
-    "essentia"
-    #"torch>=2.7.0",
-    #"torchaudio>=2.7.0",
+    #"tqdm>=4.66",
+    #"pydub",
+    #"libsndfile-dev",
+    #"essentia"
 ]
 

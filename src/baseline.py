@@ -148,7 +148,7 @@ class Baseline:
         if output_path is not None:
             sf.write(output_path, out, self.sample_rate)
         return out
-    
+
 
     
 

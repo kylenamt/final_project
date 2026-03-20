@@ -7,7 +7,7 @@ dependencies:
   - python=3.10
   # CUDA / cuDNN — pinned to avoid version-mismatch crashes
   - cudatoolkit=11.2
-  - cudnn=8.9.7
+  - cudnn=8.1
   # Everything else is installed via pip (pyproject.toml)
   - pip
   - pip:
