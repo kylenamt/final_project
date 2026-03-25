@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nvidia-smi)",
+      "Bash(docker --version)",
+      "Bash(docker compose:*)",
+      "Bash(conda list:*)",
+      "Read(//m/home/home3/37/thieun1/unix/anaconda3/envs/conda_env3.10/lib/**)"
+    ]
+  }
+}

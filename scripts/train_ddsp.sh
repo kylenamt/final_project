@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ensure TensorFlow can find CUDA/cuDNN libs from the conda environment
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+  export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 MODE="${MODE:-train}"
 TFRECORD_PATH="${TFRECORD_PATH:-data/ddsp_data/vocalset.tfrecord}"
 SAVE_DIR="${SAVE_DIR:-artifacts/ddsp_runs/vocalset}"

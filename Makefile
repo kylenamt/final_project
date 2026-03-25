@@ -1,5 +1,10 @@
 SHELL := /bin/bash
 
+# Ensure TF can find CUDA/cuDNN libs from the conda environment
+ifdef CONDA_PREFIX
+export LD_LIBRARY_PATH := $(CONDA_PREFIX)/lib$(if $(LD_LIBRARY_PATH),:$(LD_LIBRARY_PATH))
+endif
+
 # ---------------------------------------------------------------------------
 # Presets
 # ---------------------------------------------------------------------------
@@ -36,8 +41,8 @@ TFRECORD_PATH   ?= data/tfrecords/solo_violin/*.tfrecord
 # ---------------------------------------------------------------------------
 # Training config
 # ---------------------------------------------------------------------------
-BATCH_SIZE      ?= 8
-GIN_MODEL       ?= models/ae.gin
+BATCH_SIZE      ?= 16
+GIN_MODEL       ?= models/solo_instrument.gin
 GIN_DATASET     ?= datasets/tfrecord.gin
 GIN_EVAL        ?= eval/basic_f0_ld.gin
 GIN_SEARCH_PATH ?= configs/ddsp_gin
@@ -59,7 +64,7 @@ TRAIN_ENV = \
 
 # Preset names are consumed as no-op targets so `make train ae` works
 $(PRESETS):
-	@:
+	@:solo_instrument
 
 setup:
 	conda env create -f environment.yml || conda env update -f environment.yml

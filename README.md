@@ -3,6 +3,12 @@
 DDSP-based timbre transfer experiments — train a synthesizer on one instrument
 and resynthesize audio from another source.
 
+**How it works:** A DDSP autoencoder is trained on a target instrument's audio.
+At inference, pitch (F0) and loudness are extracted from a source signal and fed
+through the trained decoder to resynthesize the audio in the target instrument's
+timbre. Two deterministic vocoder baselines (WORLD and SMS/HPS) are provided for
+comparison. See [docs/architecture.md](docs/architecture.md) for the full picture.
+
 ## Quick start
 
 ### 1. Environment setup
@@ -23,10 +29,10 @@ The image bundles CUDA 11.2 + cuDNN 8.1 + TF 2.11.1 — works on any GPU.
 #### Option B: Conda (local install)
 
 Requires [Miniconda/Anaconda](https://docs.conda.io/en/latest/miniconda.html)
-and an NVIDIA GPU with CUDA 11.2 support.
+and an NVIDIA GPU with CUDA 11 support.
 
 ```bash
-make setup                  # creates conda env with Python 3.10, CUDA 11.2, cuDNN 8.1, and all pip deps
+make setup                  # creates conda env with Python 3.10, CUDA 11.8, cuDNN 8.9.2, and all pip deps
 conda activate conda_env3.10
 ```
 
@@ -39,7 +45,7 @@ conda activate conda_env3.10
 
 ### 2. Prepare data
 
-Place mono `.wav` files in `data/preprocessed/solo_violin/` (or change
+Place mono `.wav` files in `data/raw/solo_violin/` (or change
 `INPUT_PATTERN`), then:
 
 ```bash
@@ -54,10 +60,17 @@ This creates TFRecord shards in `data/tfrecords/solo_violin/`.
 make train
 ```
 
-Training checkpoints are saved to `artifacts/ae/`. Override defaults:
+Training checkpoints are saved to the preset's `SAVE_DIR`. Override defaults:
 
 ```bash
-make train SAVE_DIR=artifacts/my_run/ BATCH_SIZE=16
+make train SAVE_DIR=artifacts/my_run/ BATCH_SIZE=32
+```
+
+Or use a preset (see below):
+
+```bash
+make train ae
+make train solo_instrument
 ```
 
 ### 4. Evaluate
@@ -69,8 +82,20 @@ make eval
 ### 5. Upload to Hugging Face
 
 ```bash
-make upload-hf HF_REPO=username/repo-name MODEL_DIR=artifacts/ae/ PATH_IN_REPO=trained_noreverb
+make upload-hf HF_REPO=username/repo-name MODEL_DIR=artifacts/ae/ PATH_IN_REPO=ae
 ```
+
+## Presets
+
+Presets are defined in `configs/training_config/preset.mk` and set `SAVE_DIR`,
+`MODEL_DIR`, and `PATH_IN_REPO` automatically:
+
+| Preset | SAVE_DIR | Model |
+|--------|----------|-------|
+| `ae` | `artifacts/ae/` | Full autoencoder (encoder + decoder) |
+| `solo_instrument` | `artifacts/solo_instrument/` | Decoder-only with trainable reverb |
+
+Usage: `make train ae`, `make eval solo_instrument`, etc.
 
 ## Makefile targets
 
@@ -83,18 +108,17 @@ make upload-hf HF_REPO=username/repo-name MODEL_DIR=artifacts/ae/ PATH_IN_REPO=t
 | `make eval`      | Evaluate DDSP model                                                      |
 | `make sample`    | Sample from DDSP model                                                   |
 | `make upload-hf` | Upload checkpoint + gin config to Hugging Face                           |
-| `make help`      | Print all targets and variables                                          |
 
 ## Overridable variables
 
 | Variable          | Default                                           | Description                       |
 | ----------------- | ------------------------------------------------- | --------------------------------- |
-| `INPUT_PATTERN`   | `data/preprocessed/solo_violin/*.wav`             | Glob for input audio files        |
+| `INPUT_PATTERN`   | `data/raw/solo_violin/*.wav`                      | Glob for input audio files        |
 | `OUTPUT_TFRECORD` | `data/tfrecords/solo_violin/solo_violin.tfrecord` | TFRecord output path              |
 | `TFRECORD_PATH`   | `data/tfrecords/solo_violin/*.tfrecord`           | TFRecord glob for training        |
-| `SAVE_DIR`        | `artifacts/ae/`                                   | Checkpoint save directory         |
-| `BATCH_SIZE`      | `8`                                               | Training batch size               |
-| `GIN_MODEL`       | `models/ae.gin`                                   | Gin config for model architecture |
+| `SAVE_DIR`        | (set by preset)                                   | Checkpoint save directory         |
+| `BATCH_SIZE`      | `16`                                              | Training batch size               |
+| `GIN_MODEL`       | `models/solo_instrument.gin`                      | Gin config for model architecture |
 | `GIN_DATASET`     | `datasets/tfrecord.gin`                           | Gin config for dataset            |
 | `GIN_EVAL`        | `eval/basic_f0_ld.gin`                            | Gin config for evaluation         |
 | `GIN_SEARCH_PATH` | `configs/ddsp_gin`                                | Gin file search path              |
@@ -102,10 +126,47 @@ make upload-hf HF_REPO=username/repo-name MODEL_DIR=artifacts/ae/ PATH_IN_REPO=t
 ## Project structure
 
 ```
-src/               # Python modules (feature_utils, loss, model_loading, etc.)
-src/demo/          # Jupyter notebooks (timbre_transfer, playground)
-configs/ddsp_gin/  # Gin configuration files
-scripts/           # Shell scripts (train_ddsp.sh, upload_to_hf.py)
-data/              # Audio data and TFRecords
-artifacts/         # Trained model checkpoints
+src/                          Python package
+  ├── utils.py                Audio I/O helpers
+  ├── data_preprocessing.py   Silence trimming, resampling, splitting
+  ├── feature_utils.py        F0/loudness extraction and manipulation
+  ├── model_loading.py        Checkpoint/gin discovery, model restoration
+  ├── timbre_transfer.py      Inference script (CLI + module)
+  ├── baseline.py             WORLD and SMS/HPS vocoder baselines
+  ├── visualize.py            Spectrogram and feature plotting
+  ├── evaluation/             Evaluation subpackage
+  │   ├── loss.py             MMD and Wasserstein distance metrics
+  │   ├── segment.py          Audio segmentation
+  │   └── timbre_metrics.py   Spectral feature extraction (pytimbre)
+  └── demo/                   Jupyter notebooks
+      ├── timbre_transfer.ipynb
+      ├── baseline_demo.ipynb
+      ├── timbre_metrics_demo.ipynb
+      ├── run_preprocessing.ipynb
+      └── check_gpu.ipynb
+configs/
+  ├── ddsp_gin/               Gin configuration files
+  │   ├── models/             Model architectures (ae.gin, solo_instrument.gin)
+  │   ├── datasets/           Dataset providers (tfrecord.gin, nsynth.gin)
+  │   ├── eval/               Evaluation configs
+  │   └── optimization/       Training hyperparameters
+  └── training_config/
+      └── preset.mk           Named experiment presets
+scripts/
+  ├── train_ddsp.sh           Training entry point (wraps ddsp_run)
+  └── upload_to_hf.py         Upload checkpoints to Hugging Face
+data/                         Audio data and TFRecords
+artifacts/                    Trained model checkpoints
+docs/                         Documentation
+  ├── architecture.md         Codebase architecture and module reference
+  └── evaluation.md           Evaluation pipeline reference
+Dockerfile                    GPU container (TF 2.11.1-gpu base)
+docker-compose.yml            Docker Compose with GPU support
+environment.yml               Conda environment definition
+pyproject.toml                Package metadata and pip dependencies
 ```
+
+## Documentation
+
+- [docs/architecture.md](docs/architecture.md) — codebase architecture, module reference, gin configuration, and training orchestration.
+- [docs/evaluation.md](docs/evaluation.md) — evaluation pipeline: segmentation, timbre feature extraction, and distributional distance metrics.
