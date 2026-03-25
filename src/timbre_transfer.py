@@ -4,20 +4,25 @@
 Can be run standalone from the command line or imported as a module.
 Supports both local checkpoints and pretrained models from GCS.
 """
+
+from __future__ import annotations
+
 import argparse
 import copy
 import os
 import pickle
-import time
 import sys
+import time
 import warnings
 from pathlib import Path
+
+from typing import Any, Dict
 
 import gin
 import librosa
 import numpy as np
 import soundfile as sf
-import tensorflow.compat.v2 as tf # type: ignore
+import tensorflow.compat.v2 as tf  # type: ignore
 
 import ddsp
 import ddsp.training
@@ -33,12 +38,6 @@ from model_loading import (
     PRETRAINED_MODELS,
 )
 from feature_utils import (
-    auto_adjust_features,
-    compute_alignment,
-    compute_features,
-    load_dataset_stats,
-    shift_f0,
-    shift_loudness,
     trim_features,
 )
 
@@ -46,7 +45,9 @@ from feature_utils import (
 DEFAULT_SAMPLE_RATE = 16000
 
 
-def load_model(model_dir: str, gin_file: str, audio, audio_features):
+def load_model(
+    model_dir: str, gin_file: str, audio: np.ndarray, audio_features: Dict[str, Any]
+) -> tuple:
     with gin.unlock_config():
         gin.parse_config_file(gin_file, skip_unknown=True)
 
@@ -76,7 +77,7 @@ def load_model(model_dir: str, gin_file: str, audio, audio_features):
     return model, audio_features
 
 
-def resynthesize(model, audio_features):
+def resynthesize(model: Any, audio_features: Dict[str, Any]) -> np.ndarray:
     start_time = time.time()
     outputs = model(audio_features, training=False)
     audio_gen = model.get_audio_from_outputs(outputs)

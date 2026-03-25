@@ -1,0 +1,18 @@
+{
+    "name": "DDSP Timbre Transfer",
+    "dockerComposeFile": "../docker-compose.yml",
+    "service": "ddsp",
+    "workspaceFolder": "/workspace",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-toolsai.jupyter"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/bin/python3"
+            }
+        }
+    },
+    "remoteUser": "root"
+}

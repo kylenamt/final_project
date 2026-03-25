@@ -21,12 +21,23 @@ dependencies = [
     "soundfile",
     "librosa",
     "apache-beam",
-    "tensorflow[and-cuda]==2.11.1",
+    "tensorflow==2.11.1",
     "tensorflow-probability==0.19.0",
     "frechet_audio_distance",
-    #"tqdm>=4.66",
-    #"pydub",
-    #"libsndfile-dev",
-    #"essentia"
 ]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = [
+    "utils",
+    "baseline",
+    "feature_utils",
+    "model_loading",
+    "timbre_transfer",
+    "visualize",
+    "data_preprocessing",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 

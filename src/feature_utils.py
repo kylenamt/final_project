@@ -5,6 +5,8 @@ manipulation, auto-adjustment to match a target dataset, and simple
 feature trimming.
 """
 
+from __future__ import annotations
+
 import os
 import pickle
 from typing import Any, Dict, Optional

@@ -1,0 +1,22 @@
+services:
+  ddsp:
+    build: .
+    # GPU access — requires nvidia-container-toolkit on the host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      # Mount project directory so edits are reflected immediately
+      - .:/workspace
+      # Persist pip cache across rebuilds
+      - pip-cache:/root/.cache/pip
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+
+volumes:
+  pip-cache:

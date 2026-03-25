@@ -22,40 +22,16 @@ Notes:
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 from pytimbre.audio import Waveform
 from pytimbre.spectral.spectral_frame_builder import FrameBuilder
 from pytimbre.spectral.spectra import Spectrum
 from pytimbre.spectral.time_histories import SpectralTimeHistory
-from pytimbre.timbre_features.metrics.level import LevelMetrics
 from pytimbre.timbre_features.metrics.spectral import SpectralMetrics
 
-metrics_types = [
-    "release",
-    "spectral_centroid",
-    "spectral_crest",
-    "spectral_decrease",
-    "spectral_energy",
-    "spectral_flatness",
-    "spectral_kurtosis",
-    "spectral_roll_off",
-    "spectral_skewness",
-    "spectral_slope",
-    "spectral_spread",
-    "temporal_centroid",
-    "decrease",
-    "decrease_slope",
-    "effective_duration",
-    "frequency_modulation",
-    "log_attack",
-    "mean_center",
-    "amplitude_modulation",
-    "attack",
-    "attack_slope"
-]
-    
+
 
 class TimbreMetrics:
     def __init__(
@@ -70,9 +46,7 @@ class TimbreMetrics:
 
     @staticmethod
     def from_array(signal: np.ndarray, sr: int) -> Waveform:
-        
         """Create a pytimbre Waveform from a mono numpy array."""
-        
         if signal is None:
             raise ValueError("signal cannot be None")
 
@@ -86,9 +60,7 @@ class TimbreMetrics:
 
     @staticmethod
     def _to_scalar(value: Any) -> float:
-        
         """Convert feature outputs to scalar floats for stable aggregation."""
-        
         if isinstance(value, (int, float, np.integer, np.floating)):
             return float(value)
 
@@ -116,10 +88,8 @@ class TimbreMetrics:
             return f"spec_{name}"
         return name
 
-    def _build_time_history(self, wfm: Waveform) -> SpectralTimeHistory | None:
-        
+    def _build_time_history(self, wfm: Waveform) -> Optional[SpectralTimeHistory]:
         """Create a spectral time-history representation from a waveform."""
-        
         if not isinstance(wfm, Waveform):
             return None
 
@@ -140,13 +110,6 @@ class TimbreMetrics:
             return {}
 
         features: Dict[str, Any] = {}
-
-        # try:
-        #     for k, v in LevelMetrics.from_spectrum(spec).get_features().items():
-        #         features[self._normalize_feature_name(k)] = v
-        # except Exception:
-        #     # Some external metric paths can fail on edge-case spectra; keep extraction best-effort.
-        #     pass
 
         try:
             for k, v in SpectralMetrics.from_spectrum(spec).get_features().items():

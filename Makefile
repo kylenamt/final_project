@@ -1,112 +1,99 @@
 SHELL := /bin/bash
 
-INPUT_PATTERN ?= data/raw/solo_violin/*.wav
+# ---------------------------------------------------------------------------
+# Presets
+# ---------------------------------------------------------------------------
+PRESET_LINES := $(shell grep -v '^\s*\#' configs/training_config/presets.mk)
+PRESETS      := $(foreach line,$(PRESET_LINES),$(word 1,$(line)))
+
+PRESET ?=
+ifneq ($(filter train eval sample,$(firstword $(MAKECMDGOALS))),)
+    ifeq ($(PRESET),)
+        PRESET := $(word 2,$(MAKECMDGOALS))
+    endif
+endif
+
+ifneq ($(PRESET),)
+    ifeq ($(filter $(PRESET),$(PRESETS)),)
+        $(error Unknown preset '$(PRESET)'. Valid presets: $(PRESETS))
+    endif
+
+    _LINE        := $(filter $(PRESET) %,$(PRESET_LINES))
+    SAVE_DIR     ?= $(word 2,$(_LINE))
+    MODEL_DIR    ?= $(word 3,$(_LINE))
+    PATH_IN_REPO ?= $(word 4,$(_LINE))
+
+    $(info Using preset '$(PRESET)': SAVE_DIR=$(SAVE_DIR), MODEL_DIR=$(MODEL_DIR))
+endif
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+INPUT_PATTERN   ?= data/raw/solo_violin/*.wav
 OUTPUT_TFRECORD ?= data/tfrecords/solo_violin/solo_violin.tfrecord
-TFRECORD_PATH ?= data/tfrecords/solo_violin/*.tfrecord
+TFRECORD_PATH   ?= data/tfrecords/solo_violin/*.tfrecord
 
-# SAMPLE_PATH ?= data/voice/forte/*.wav
-# SAMPLE_TFRECORD ?= data/voice/*.tfrecord
-
-SAVE_DIR ?= artifacts/ae2/
-MODEL_DIR ?= artifacts/ae2/
-# PATH_IN_REPO ?= trained_noreverb
-# HF_REPO ?=
-
-BATCH_SIZE ?= 8
-
-GIN_MODEL ?= models/ae.gin
-GIN_DATASET ?= datasets/tfrecord.gin
-GIN_EVAL ?= eval/basic_f0_ld.gin
+# ---------------------------------------------------------------------------
+# Training config
+# ---------------------------------------------------------------------------
+BATCH_SIZE      ?= 8
+GIN_MODEL       ?= models/ae.gin
+GIN_DATASET     ?= datasets/tfrecord.gin
+GIN_EVAL        ?= eval/basic_f0_ld.gin
 GIN_SEARCH_PATH ?= configs/ddsp_gin
+PYTHON          ?= python
 
-PYTHON ?= python
+TRAIN_ENV = \
+    SAVE_DIR="$(SAVE_DIR)" \
+    BATCH_SIZE="$(BATCH_SIZE)" \
+    GIN_MODEL="$(GIN_MODEL)" \
+    GIN_DATASET="$(GIN_DATASET)" \
+    GIN_EVAL="$(GIN_EVAL)" \
+    GIN_SEARCH_PATH="$(GIN_SEARCH_PATH)" \
+    PYTHON_BIN="$(PYTHON)"
 
-.PHONY: help setup lock prepare prepare-input train eval sample
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+.PHONY: help setup lock docker docker-build prepare prepare-sample train eval sample upload-hf $(PRESETS)
+
+# Preset names are consumed as no-op targets so `make train ae` works
+$(PRESETS):
+	@:
 
 setup:
 	conda env create -f environment.yml || conda env update -f environment.yml
 	@echo "Done. Activate with:  conda activate conda_env3.10"
+
+docker-build:
+	docker compose build
+
+docker:
+	docker compose run --rm ddsp
 
 lock:
 	conda list --export > conda-lock.txt
 	pip freeze > requirements-lock.txt
 	@echo "Lock files updated: conda-lock.txt, requirements-lock.txt"
 
-help:
-	@echo "Targets:"
-	@echo "  setup    - Create/update conda env from environment.yml"
-	@echo "  lock     - Regenerate conda-lock.txt & requirements-lock.txt"
-	@echo "  prepare  - Build TFRecord dataset from INPUT_PATTERN"
-	@echo "  train    - Train DDSP model"
-	@echo "  eval     - Evaluate DDSP model"
-	@echo "  sample   - Sample from DDSP model"
-	@echo "  upload-hf - Upload latest checkpoint + gin to Hugging Face"
-	@echo "Variables (override with VAR=...):"
-	@echo "  INPUT_PATTERN, OUTPUT_TFRECORD, TFRECORD_PATH, SAVE_DIR, BATCH_SIZE"
-	@echo "  GIN_MODEL, GIN_DATASET, GIN_EVAL, GIN_SEARCH_PATH, PYTHON"
-	@echo "  HF_REPO, MODEL_DIR, PATH_IN_REPO"
-
+define prepare_tfrecord
+	ddsp_prepare_tfrecord \
+		--input_audio_filepatterns="$(1)" \
+		--output_tfrecord_path="$(2)" \
+		--num_shards=10 \
+		--alsologtostderr
+endef
 
 prepare:
-	ddsp_prepare_tfrecord \
-		--input_audio_filepatterns="$(INPUT_PATTERN)" \
-		--output_tfrecord_path="$(OUTPUT_TFRECORD)" \
-		--num_shards=10 \
-		--alsologtostderr
+	$(call prepare_tfrecord,$(INPUT_PATTERN),$(OUTPUT_TFRECORD))
 
 prepare-sample:
-	ddsp_prepare_tfrecord \
-		--input_audio_filepatterns="$(SAMPLE_PATH)" \
-		--output_tfrecord_path="$(SAMPLE_TFRECORD)" \
-		--num_shards=10 \
-		--alsologtostderr
+	$(call prepare_tfrecord,$(SAMPLE_PATH),$(SAMPLE_TFRECORD))
 
-# train-reverb:
-# 	TFRECORD_PATH="$(TFRECORD_PATH)" \
-# 	SAVE_DIR="$(SAVE_DIR)" \
-# 	BATCH_SIZE="$(BATCH_SIZE)" \
-# 	GIN_MODEL="$(GIN_MODEL)" \
-# 	GIN_DATASET="$(GIN_DATASET)" \
-# 	GIN_EVAL="$(GIN_EVAL)" \
-# 	GIN_SEARCH_PATH="$(GIN_SEARCH_PATH)" \
-# 	PYTHON_BIN="$(PYTHON)" \
-# 	MODE=train \
-# 	bash scripts/train_ddsp.sh
-
-train:
-	TFRECORD_PATH="$(TFRECORD_PATH)" \
-	SAVE_DIR="$(SAVE_DIR)" \
-	BATCH_SIZE="$(BATCH_SIZE)" \
-	GIN_MODEL="$(GIN_MODEL)" \
-	GIN_DATASET="$(GIN_DATASET)" \
-	GIN_EVAL="$(GIN_EVAL)" \
-	GIN_SEARCH_PATH="$(GIN_SEARCH_PATH)" \
-	PYTHON_BIN="$(PYTHON)" \
-	MODE=train \
-	bash scripts/train_ddsp.sh
-
-eval:
-	TFRECORD_PATH="$(TFRECORD_PATH)" \
-	SAVE_DIR="$(SAVE_DIR)" \
-	BATCH_SIZE="$(BATCH_SIZE)" \
-	GIN_MODEL="$(GIN_MODEL)" \
-	GIN_DATASET="$(GIN_DATASET)" \
-	GIN_EVAL="$(GIN_EVAL)" \
-	GIN_SEARCH_PATH="$(GIN_SEARCH_PATH)" \
-	PYTHON_BIN="$(PYTHON)" \
-	MODE=eval \
-	bash scripts/train_ddsp.sh
-
-sample:
-	TFRECORD_PATH="$(SAMPLE_TFRECORD)" \
-	SAVE_DIR="$(SAVE_DIR)" \
-	BATCH_SIZE="$(BATCH_SIZE)" \
-	GIN_MODEL="$(GIN_MODEL)" \
-	GIN_DATASET="$(GIN_DATASET)" \
-	GIN_EVAL="$(GIN_EVAL)" \
-	GIN_SEARCH_PATH="$(GIN_SEARCH_PATH)" \
-	PYTHON_BIN="$(PYTHON)" \
-	MODE=sample \
+train eval sample:
+	$(TRAIN_ENV) \
+	TFRECORD_PATH="$(if $(filter sample,$@),$(SAMPLE_TFRECORD),$(TFRECORD_PATH))" \
+	MODE=$@ \
 	bash scripts/train_ddsp.sh
 
 upload-hf:

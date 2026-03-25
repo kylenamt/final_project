@@ -1,0 +1,21 @@
+# Version control
+.git
+.gitattributes
+
+# Python artifacts
+__pycache__/
+*.egg-info/
+*.pyc
+.venv*
+
+# Model artifacts and large data (mount at runtime instead)
+artifacts/
+data/tfrecords/
+data/raw/
+
+# IDE and OS files
+.vscode/
+.devcontainer/
+.claude/
+*.swp
+.DS_Store

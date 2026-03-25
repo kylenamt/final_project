@@ -76,10 +76,37 @@ def normalize_audio(audio: np.ndarray, peak: float = 0.99, eps: float = 1e-8) ->
 		return arr
 	return arr * (peak / max_val)
 
+def clip_audio(
+		audio: np.ndarray,
+		end_time: float,
+		start_time: float = 0.0,
+		sr: int = 16000,
+	) -> np.ndarray:
+		"""Clip audio to a specified time range.
+
+		Parameters
+		----------
+		audio:
+			Audio waveform.
+		end_time:
+			End time in seconds.
+		start_time:
+			Start time in seconds. Defaults to 0.0.
+		sr:
+			Sampling rate used to convert time to samples.
+
+		Returns
+		-------
+		Clipped audio array.
+		"""
+		start_sample = int(start_time * sr)
+		end_sample = int(end_time * sr)
+		return audio[start_sample:end_sample]
 
 __all__ = [
 	"load_audio",
 	"save_audio",
 	"to_mono",
 	"normalize_audio",
+	"clip_audio",
 ]

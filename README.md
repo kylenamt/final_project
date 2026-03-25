@@ -7,11 +7,26 @@ and resynthesize audio from another source.
 
 ### 1. Environment setup
 
-Requires [Miniconda/Anaconda](https://docs.conda.io/en/latest/miniconda.html)
-and an NVIDIA GPU with CUDA support.
+#### Option A: Docker (recommended for reproducibility)
+
+Requires [Docker](https://docs.docker.com/get-docker/) and
+[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+(any NVIDIA driver >= 450.80).
 
 ```bash
-make setup                  # creates conda env with Python 3.10, CUDA 11.2, cuDNN 8.9.7, and all pip deps
+docker compose run --rm ddsp          # build image & drop into a shell
+# or for VS Code: open the repo and select "Reopen in Container"
+```
+
+The image bundles CUDA 11.2 + cuDNN 8.1 + TF 2.11.1 — works on any GPU.
+
+#### Option B: Conda (local install)
+
+Requires [Miniconda/Anaconda](https://docs.conda.io/en/latest/miniconda.html)
+and an NVIDIA GPU with CUDA 11.2 support.
+
+```bash
+make setup                  # creates conda env with Python 3.10, CUDA 11.2, cuDNN 8.1, and all pip deps
 conda activate conda_env3.10
 ```
 

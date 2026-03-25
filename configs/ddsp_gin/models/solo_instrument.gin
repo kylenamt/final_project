@@ -30,12 +30,11 @@ ProcessorGroup.dag = [
     ['noise_magnitudes']),
   (@processors.Add(),
     ['filtered_noise/signal', 'harmonic/signal']),
-  #(@effects.Reverb(),
-  #  ['add/signal']),
+  (@effects.Reverb(),
+    ['add/signal']),
 ]
 
 # Reverb
-#Reverb.name = 'reverb'
-#Reverb.reverb_length = 48000
-#Reverb.trainable = True
-#
+Reverb.name = 'reverb'
+Reverb.reverb_length = 48000
+Reverb.trainable = True

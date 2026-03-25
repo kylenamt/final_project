@@ -1,6 +1,11 @@
-import numpy as np
-import librosa
+"""Non-overlapping audio segmentation utilities."""
+
+from __future__ import annotations
+
 from typing import Optional
+
+import librosa
+import numpy as np
 
 
 class AudioSegmenter:
