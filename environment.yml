@@ -6,9 +6,9 @@ channels:
 
 dependencies:
   - python=3.10
-  # CUDA / cuDNN — TF 2.11 needs CUDA 11 + cuDNN 8
+  # CUDA / cuDNN — TF 2.11 officially requires CUDA 11.2 + cuDNN 8.1
   - cudatoolkit=11.8
-  - cudnn=8.9.2.26=cuda11_0
+  - cudnn=8.1.0.77
   # Everything else is installed via pip (pyproject.toml)
   - pip
   - pip:

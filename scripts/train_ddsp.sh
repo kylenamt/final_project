@@ -6,6 +6,10 @@ if [[ -n "${CONDA_PREFIX:-}" ]]; then
   export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
+# Prevent TF from grabbing all GPU memory upfront.
+# Lets the allocator grow as needed, avoiding fragmentation-induced segfaults.
+export TF_FORCE_GPU_ALLOW_GROWTH=true
+
 MODE="${MODE:-train}"
 TFRECORD_PATH="${TFRECORD_PATH:-data/ddsp_data/vocalset.tfrecord}"
 SAVE_DIR="${SAVE_DIR:-artifacts/ddsp_runs/vocalset}"
