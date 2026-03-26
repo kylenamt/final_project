@@ -1,5 +1,9 @@
 SHELL := /bin/bash
 
+# Load .env file if present
+-include .env
+export HF_REPO HF_TOKEN
+
 # Ensure TF can find CUDA/cuDNN libs from the conda environment
 ifdef CONDA_PREFIX
 export LD_LIBRARY_PATH := $(CONDA_PREFIX)/lib$(if $(LD_LIBRARY_PATH),:$(LD_LIBRARY_PATH))
@@ -8,11 +12,10 @@ endif
 # ---------------------------------------------------------------------------
 # Presets
 # ---------------------------------------------------------------------------
-PRESET_LINES := $(shell grep -v '^\s*\#' configs/training_config/presets.mk)
-PRESETS      := $(foreach line,$(PRESET_LINES),$(word 1,$(line)))
+PRESETS := $(shell awk '!/^\s*\#/ && NF {print $$1}' configs/training_config/presets.mk)
 
 PRESET ?=
-ifneq ($(filter train eval sample,$(firstword $(MAKECMDGOALS))),)
+ifneq ($(filter train eval sample upload-hf download-hf,$(firstword $(MAKECMDGOALS))),)
     ifeq ($(PRESET),)
         PRESET := $(word 2,$(MAKECMDGOALS))
     endif
@@ -23,10 +26,9 @@ ifneq ($(PRESET),)
         $(error Unknown preset '$(PRESET)'. Valid presets: $(PRESETS))
     endif
 
-    _LINE        := $(filter $(PRESET) %,$(PRESET_LINES))
-    SAVE_DIR     ?= $(word 2,$(_LINE))
-    MODEL_DIR    ?= $(word 3,$(_LINE))
-    PATH_IN_REPO ?= $(word 4,$(_LINE))
+    SAVE_DIR     ?= $(shell awk '/^$(PRESET)\s/ {print $$2}' configs/training_config/presets.mk)
+    MODEL_DIR    ?= $(shell awk '/^$(PRESET)\s/ {print $$3}' configs/training_config/presets.mk)
+    PATH_IN_REPO ?= $(shell awk '/^$(PRESET)\s/ {print $$4}' configs/training_config/presets.mk)
 
     $(info Using preset '$(PRESET)': SAVE_DIR=$(SAVE_DIR), MODEL_DIR=$(MODEL_DIR))
 endif
@@ -60,11 +62,11 @@ TRAIN_ENV = \
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: help setup lock docker docker-build prepare prepare-sample train eval sample upload-hf $(PRESETS)
+.PHONY: help setup lock docker docker-build prepare prepare-sample train eval sample upload-hf download-hf $(PRESETS)
 
 # Preset names are consumed as no-op targets so `make train ae` works
 $(PRESETS):
-	@:solo_instrument
+	@:
 
 setup:
 	conda env create -f environment.yml || conda env update -f environment.yml
@@ -105,4 +107,11 @@ upload-hf:
 	$(PYTHON) scripts/upload_to_hf.py \
 		--repo "$(HF_REPO)" \
 		--model-dir "$(MODEL_DIR)" \
-		--path-in-repo "$(PATH_IN_REPO)"
+		--path-in-repo "$(PATH_IN_REPO)" \
+		--include-checkpoint-file
+
+download-hf:
+	$(PYTHON) scripts/download_from_hf.py \
+		--repo "$(HF_REPO)" \
+		--path-in-repo "$(PATH_IN_REPO)" \
+		--model-dir "$(MODEL_DIR)"
