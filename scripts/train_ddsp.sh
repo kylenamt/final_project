@@ -57,12 +57,14 @@ else
   exit 1
 fi
 
-if [[ -n "${GIN_SEARCH_PATH}" ]]; then
-  if [[ -n "${PYTHONPATH:-}" ]]; then
-    export PYTHONPATH="${GIN_SEARCH_PATH}:${PYTHONPATH}"
-  else
-    export PYTHONPATH="${GIN_SEARCH_PATH}"
-  fi
+# Add gin search path and project root to PYTHONPATH so gin can resolve
+# custom modules (e.g. src.safe_trainer).
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+_EXTRA_PATHS="${GIN_SEARCH_PATH}:${PROJECT_ROOT}"
+if [[ -n "${PYTHONPATH:-}" ]]; then
+  export PYTHONPATH="${_EXTRA_PATHS}:${PYTHONPATH}"
+else
+  export PYTHONPATH="${_EXTRA_PATHS}"
 fi
 
 GIN_PARAM_FLAGS=("--gin_param=TFRecordProvider.file_pattern='${TFRECORD_PATH}*'" "--gin_param=batch_size=${BATCH_SIZE}")
