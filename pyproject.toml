@@ -41,4 +41,5 @@ py-modules = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["evaluation"]
 

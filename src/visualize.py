@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 import matplotlib
@@ -14,8 +15,18 @@ from scipy import signal as scipy_signal
 from scipy.signal import get_window
 
 from feature_utils import compute_features
+from utils import DEFAULT_SAMPLE_RATE
 
-DEFAULT_SAMPLE_RATE = 16000
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "plot_spectrograms",
+    "plot_features",
+    "plot_feature_from_audio",
+    "plot_series",
+    "plot_transfer_comparison",
+    "plot_envelope_comparison",
+]
 
 
 def plot_spectrograms(
@@ -124,7 +135,7 @@ def plot_transfer_comparison(
     plt.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"  [plot] Saved → {save_path}")
+        logger.info("Saved plot → %s", save_path)
     plt.close(fig)
 
 
@@ -160,5 +171,5 @@ def plot_envelope_comparison(
     plt.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"  [plot] Saved → {save_path}")
+        logger.info("Saved plot → %s", save_path)
     plt.close(fig)

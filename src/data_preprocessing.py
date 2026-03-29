@@ -10,6 +10,13 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
+__all__ = [
+    "trim_silence",
+    "clip_silence",
+    "downsample_audio",
+    "split_audio",
+]
+
 
 def trim_silence(
     audio: np.ndarray,

@@ -102,6 +102,17 @@ _MAX_F0_HZ: float = float(librosa.midi_to_hz(110.0))
 # Type alias for the feature dict used throughout the pipeline.
 AudioFeatures = Dict[str, Any]
 
+__all__ = [
+    "AudioFeatures",
+    "auto_adjust_features",
+    "compute_alignment",
+    "compute_features",
+    "load_dataset_stats",
+    "shift_f0",
+    "shift_loudness",
+    "trim_features",
+]
+
 
 # ---------------------------------------------------------------------------
 # Dataset statistics

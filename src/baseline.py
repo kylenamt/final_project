@@ -37,6 +37,11 @@ try:
 except ImportError:
     _HAS_SMS_TOOLS = False
 
+__all__ = [
+    "Baseline",
+    "BaselineSMS",
+]
+
 
 class Baseline:
     """WORLD-vocoder baseline for timbre transfer.

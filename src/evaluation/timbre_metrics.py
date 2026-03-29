@@ -1,22 +1,28 @@
 """Timbre metrics extraction utilities.
 
-This module provides the ``TimbreMetrics`` class, which extracts frame-based
-spectral descriptors from mono audio signals using ``SpectralTimeHistory``.
+Extracts spectral timbre descriptors (e.g. spectral centroid, spread,
+loudness levels) from mono audio signals. Audio is split into overlapping
+frames, each frame's spectrum is analysed, and the per-frame results are
+either returned as time-series arrays or averaged into single scalars.
 
-Quick usage guide:
-- ``TimbreMetrics(...)``: configure sample rate, frame width, and frame overlap.
-- ``extract_series_from_array(signal)``: returns per-frame arrays for each
-    metric (time-history trajectories).
-- ``extract_from_array(signal)``: returns one scalar per metric by averaging
-    the frame-wise trajectories.
-- ``_extract_features(file_path)``: compatibility helper for ``.wav`` file
-    paths (loads file then calls array-based extraction).
+Usage
+-----
+>>> tm = TimbreMetrics(sample_rate=16000, frame_width_sec=0.25, overlap_pct=0.5)
 
-Notes:
-- Input must be a 1D mono numpy array for array-based methods.
-- Level metrics are normalized to ``spec_lz``, ``spec_la``, and ``spec_lc``.
-- Feature extraction is best-effort per frame; failing metric paths are
-    skipped so extraction can continue.
+From a numpy array (preferred):
+>>> scalars = tm.extract_from_array(signal)        # dict of metric -> float
+>>> series  = tm.extract_series_from_array(signal)  # dict of metric -> 1-D array
+
+From a .wav file on disk:
+>>> series  = tm.extract_series_from_file("clip.wav")
+
+Notes
+-----
+- All array inputs must be 1-D mono float/int numpy arrays.
+- Level metrics ``la``, ``lc``, ``lz`` are renamed to ``spec_la``, ``spec_lc``,
+  ``spec_lz`` for consistency with the rest of the feature set.
+- If a metric fails on a particular frame it is silently skipped so that the
+  remaining metrics are still returned.
 """
 
 from __future__ import annotations
@@ -34,6 +40,18 @@ from pytimbre.timbre_features.metrics.spectral import SpectralMetrics
 
 
 class TimbreMetrics:
+    """Configurable timbre feature extractor.
+
+    Parameters
+    ----------
+    sample_rate : int
+        Expected sample rate of the input audio (Hz).
+    frame_width_sec : float
+        Duration of each analysis frame in seconds.
+    overlap_pct : float
+        Fraction of overlap between consecutive frames (0.0 – 1.0).
+    """
+
     def __init__(
         self,
         sample_rate: int = 16000,
@@ -46,7 +64,11 @@ class TimbreMetrics:
 
     @staticmethod
     def from_array(signal: np.ndarray, sr: int) -> Waveform:
-        """Create a pytimbre Waveform from a mono numpy array."""
+        """Wrap a raw numpy array as a pytimbre ``Waveform``.
+
+        Validates that *signal* is a non-empty 1-D array and casts it to
+        float64 (required by pytimbre internals).
+        """
         if signal is None:
             raise ValueError("signal cannot be None")
 
@@ -60,7 +82,12 @@ class TimbreMetrics:
 
     @staticmethod
     def _to_scalar(value: Any) -> float:
-        """Convert feature outputs to scalar floats for stable aggregation."""
+        """Coerce a feature value to a single float.
+
+        Handles ints, floats, numpy scalars, lists/tuples, and ndarrays.
+        Single-element containers return that element; multi-element ones
+        return the mean.  Returns ``np.nan`` for empty or unconvertible inputs.
+        """
         if isinstance(value, (int, float, np.integer, np.floating)):
             return float(value)
 
@@ -83,13 +110,17 @@ class TimbreMetrics:
 
     @staticmethod
     def _normalize_feature_name(name: str) -> str:
-        """Keep compatibility for level keys that were previously prefixed as spectrum metrics."""
+        """Prefix bare level names (``la``, ``lc``, ``lz``) with ``spec_`` so
+        all feature keys share a consistent naming scheme."""
         if name in {"la", "lc", "lz"}:
             return f"spec_{name}"
         return name
 
     def _build_time_history(self, wfm: Waveform) -> Optional[SpectralTimeHistory]:
-        """Create a spectral time-history representation from a waveform."""
+        """Slice *wfm* into overlapping frames and compute the FFT for each.
+
+        Returns ``None`` if the waveform is too short to fill even one frame.
+        """
         if not isinstance(wfm, Waveform):
             return None
 
@@ -105,7 +136,11 @@ class TimbreMetrics:
         return SpectralTimeHistory.from_fourier_transform(wfm, frame_builder)
 
     def _extract_single_spectrum_features(self, spec: Spectrum) -> Dict[str, Any]:
-        """Extract robust per-frame metrics while tolerating optional pytimbre failures."""
+        """Compute all available spectral metrics for one frame.
+
+        Catches errors from ``SpectralMetrics`` so that a failure in one
+        metric does not prevent the others from being returned.
+        """
         if not isinstance(spec, Spectrum):
             return {}
 
@@ -120,7 +155,11 @@ class TimbreMetrics:
         return features
 
     def extract_time_history_features(self, wfm: Waveform) -> Dict[str, Any]:
-        """Extract and aggregate frame-wise timbre features from SpectralTimeHistory."""
+        """Extract timbre metrics per frame, then average across frames.
+
+        Returns a dict mapping each metric name to a single float (the mean
+        over all frames, ignoring NaNs).
+        """
         time_history = self._build_time_history(wfm)
         if time_history is None:
             return {}
@@ -149,7 +188,11 @@ class TimbreMetrics:
         return features
 
     def extract_time_history_series(self, wfm: Waveform) -> Dict[str, np.ndarray]:
-        """Extract frame-wise feature trajectories from SpectralTimeHistory."""
+        """Extract per-frame timbre metrics without averaging.
+
+        Returns a dict mapping each metric name to a 1-D numpy array whose
+        length equals the number of frames.
+        """
         time_history = self._build_time_history(wfm)
         if time_history is None:
             return {}
@@ -174,17 +217,21 @@ class TimbreMetrics:
         return out
 
     def extract_series_from_array(self, signal: np.ndarray) -> Dict[str, np.ndarray]:
-        """Return per-frame feature arrays from an in-memory mono signal."""
+        """Convenience wrapper: numpy array in, per-frame metric arrays out."""
         wfm = self.from_array(signal, self.sample_rate)
         return self.extract_time_history_series(wfm)
 
     def extract_from_array(self, signal: np.ndarray) -> Dict[str, Any]:
-        """Primary extraction API for in-memory segment arrays using frame-wise time history."""
+        """Convenience wrapper: numpy array in, one averaged scalar per metric out."""
         wfm = self.from_array(signal, self.sample_rate)
         return self.extract_time_history_features(wfm)
     
     def extract_series_from_file(self, file_path: str) -> Dict[str, np.ndarray]:
-        """Extract per-frame feature arrays from a mono .wav file."""
+        """Load a ``.wav`` file from disk and return per-frame metric arrays.
+
+        Raises ``ValueError`` if the file is missing or contains only a WAV
+        header with no actual audio samples (≤ 44 bytes).
+        """
         if not os.path.exists(file_path) or os.path.getsize(file_path) <= 44:
             raise ValueError(
                 f"File {file_path} is missing or headers only (no audio data)."

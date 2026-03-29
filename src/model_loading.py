@@ -5,14 +5,29 @@ model directory, and to restore a ``ddsp.training.models.Autoencoder``.
 """
 
 import glob
+import logging
 import os
 import re
 from typing import Dict, Iterable, Optional, TypedDict
 
-import tensorflow.compat.v2 as tf # type: ignore
+import tensorflow.compat.v2 as tf  # type: ignore
 
 import gin
 import ddsp.training
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "ModelResult",
+    "PretrainedResult",
+    "find_model_dir",
+    "find_latest_checkpoint",
+    "restore_autoencoder",
+    "load_ddsp_model",
+    "load_models",
+    "load_pretrained_model",
+    "PRETRAINED_MODELS",
+]
 
 
 class ModelResult(TypedDict):
@@ -208,6 +223,6 @@ def load_pretrained_model(
             src = f"{gcs_path}/{fname}"
             dst = os.path.join(model_dir, fname)
             tf.io.gfile.copy(src, dst, overwrite=True)
-        print(f"Downloaded {len(remote_files)} files from {gcs_path}")
+        logger.info("Downloaded %d files from %s", len(remote_files), gcs_path)
 
     return {"model_dir": model_dir, "gin_file": gin_file}

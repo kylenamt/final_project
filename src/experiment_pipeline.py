@@ -4,13 +4,22 @@ Provides two main functions:
 - ``run_synthesize_dir`` – DDSP timbre transfer over a directory of WAV files.
 - ``run_vocoder_dir``    – WORLD vocoder baseline over the same directory using
                            a randomly-sampled "source bank" of solo instrument audio.
+
+Resume behaviour
+----------------
+Both functions skip files whose output already exists and is valid (> 44 bytes).
+To pause mid-run just interrupt the kernel (Ctrl-C / Kernel > Interrupt).
+Already-written files are preserved and will be skipped automatically on the
+next run — no separate checkpoint file is needed.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 import numpy as np
 
@@ -23,15 +32,26 @@ from feature_utils import (
     shift_f0,
     shift_loudness,
 )
-from timbre_transfer import load_model, resynthesize, DEFAULT_SAMPLE_RATE
+from timbre_transfer import load_model, resynthesize
+from utils import DEFAULT_SAMPLE_RATE
 from baseline import Baseline
 
 try:
-    from tqdm import tqdm
+    from tqdm.auto import tqdm
 except ImportError:
     tqdm = None
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "PipelineResult",
+    "collect_wav_files",
+    "make_output_path",
+    "build_source_bank",
+    "select_source_segment",
+    "run_synthesize_dir",
+    "run_vocoder_dir",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -42,12 +62,22 @@ class PipelineResult(TypedDict):
     """Return type for ``run_synthesize_dir`` and ``run_vocoder_dir``."""
     processed: int
     failed: int
+    skipped: int
     failed_files: List[str]
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_valid_output(path: Path) -> bool:
+    """Return True if *path* exists and is not a corrupt partial write.
+
+    A valid WAV file is at least 44 bytes (header). Anything smaller was left
+    behind by an interrupted write and should be reprocessed.
+    """
+    return path.exists() and path.stat().st_size > 44
 
 
 def collect_wav_files(root_dir: str | Path) -> List[Path]:
@@ -148,6 +178,9 @@ def run_synthesize_dir(
     by chunking features into 1000-frame slices and concatenating the
     synthesised output.
 
+    Files whose output already exists and is valid are skipped automatically,
+    so re-running the function resumes from where it left off.
+
     Parameters
     ----------
     model_dir, gin_file : paths to the DDSP checkpoint directory and gin config.
@@ -181,11 +214,17 @@ def run_synthesize_dir(
 
     dataset_stats = load_dataset_stats(model_dir) if auto_adjust else None
 
-    processed, failed = 0, 0
+    processed, failed, skipped = 0, 0, 0
     failed_files: List[str] = []
     items = tqdm(wav_files, desc="DDSP inference") if tqdm else wav_files
 
     for wav_path in items:
+        out_path = make_output_path(wav_path, input_dir, output_dir)
+
+        if _is_valid_output(out_path):
+            skipped += 1
+            continue
+
         try:
             audio, _ = load_audio(wav_path, sr=sr, mono=True)
             original_len = len(audio)
@@ -239,7 +278,6 @@ def run_synthesize_dir(
 
             full_audio = np.concatenate(chunks_out)[:original_len]
 
-            out_path = make_output_path(wav_path, input_dir, output_dir)
             save_audio(out_path, full_audio, sr)
             processed += 1
 
@@ -248,13 +286,55 @@ def run_synthesize_dir(
             failed_files.append(str(wav_path))
             logger.warning("Failed: %s", wav_path, exc_info=True)
 
-    logger.info("DDSP done: %d processed, %d failed", processed, failed)
-    return {"processed": processed, "failed": failed, "failed_files": failed_files}
+    logger.info(
+        "DDSP done: %d processed, %d skipped, %d failed",
+        processed, skipped, failed,
+    )
+    return {"processed": processed, "failed": failed, "skipped": skipped, "failed_files": failed_files}
 
 
 # ---------------------------------------------------------------------------
 # WORLD vocoder baseline pipeline
 # ---------------------------------------------------------------------------
+
+
+def _process_one_baseline(
+    wav_path: Path,
+    out_path: Path,
+    source_bank: List[np.ndarray],
+    sr: int,
+    method: str,
+    file_seed: int,
+) -> Optional[str]:
+    """Process a single file for the WORLD vocoder baseline.
+
+    Returns ``None`` on success, or the failing file path as a string on error.
+    This is a module-level function so it can be pickled by
+    :class:`~concurrent.futures.ProcessPoolExecutor`.
+    """
+    try:
+        bl = Baseline(sample_rate=sr)
+        transfer_fn = bl.f0_transfer if method == "f0" else bl.f0_and_ap_transfer
+
+        file_rng = np.random.default_rng(file_seed)
+
+        target_audio, _ = load_audio(wav_path, sr=sr, mono=True)
+        target_audio = target_audio.astype(np.float64)
+
+        source_audio = select_source_segment(
+            source_bank, len(target_audio), file_rng
+        )
+        target_audio, source_audio = Baseline.match_length(
+            target_audio, source_audio
+        )
+
+        result = transfer_fn(target_audio, source_audio)
+
+        save_audio(out_path, result.astype(np.float32), sr)
+        return None
+    except Exception:
+        logger.warning("Failed: %s", wav_path, exc_info=True)
+        return str(wav_path)
 
 
 def run_vocoder_dir(
@@ -265,11 +345,19 @@ def run_vocoder_dir(
     method: str = "f0",
     silence_threshold_db: float = -40.0,
     seed: int = 42,
+    n_workers: int = 1,
 ) -> PipelineResult:
     """Run WORLD vocoder baseline on every WAV file under *input_dir*.
 
     For each target file a random source segment is drawn from a "source bank"
     built from the solo instrument recordings in *source_dir*.
+
+    Each file's source segment is selected using a deterministic per-file seed
+    (``seed + file_index``) so that interrupted and resumed runs produce
+    identical output.
+
+    Files whose output already exists and is valid are skipped automatically,
+    so re-running the function resumes from where it left off.
 
     Parameters
     ----------
@@ -279,7 +367,10 @@ def run_vocoder_dir(
     sr : sample rate.
     method : ``"f0"`` for F0 transfer, ``"f0_ap"`` for F0 + AP transfer.
     silence_threshold_db : threshold for silence trimming in source audio.
-    seed : random seed for reproducible source segment selection.
+    seed : base random seed; file at index *i* uses ``seed + i``.
+    n_workers : number of parallel workers.  ``1`` (default) runs sequentially.
+        Set to ``os.cpu_count()`` or a specific integer to parallelise via
+        :class:`~concurrent.futures.ProcessPoolExecutor`.
 
     Returns
     -------
@@ -289,39 +380,67 @@ def run_vocoder_dir(
     logger.info("Baseline pipeline: %d files in %s", len(wav_files), input_dir)
 
     source_bank = build_source_bank(source_dir, sr, silence_threshold_db)
-    rng = np.random.default_rng(seed)
-    bl = Baseline(sample_rate=sr)
 
-    transfer_fn = bl.f0_transfer if method == "f0" else bl.f0_and_ap_transfer
+    # --- Build work items, skipping already-completed files ----------------
+    work: List[Dict[str, Any]] = []
+    skipped = 0
+    for file_idx, wav_path in enumerate(wav_files):
+        out_path = make_output_path(wav_path, input_dir, output_dir, suffix="_BASELINE")
+        if _is_valid_output(out_path):
+            skipped += 1
+            continue
+        work.append({
+            "wav_path": wav_path,
+            "out_path": out_path,
+            "file_seed": seed + file_idx,
+        })
+
+    logger.info(
+        "Baseline: %d to process, %d skipped, %d workers",
+        len(work), skipped, n_workers,
+    )
 
     processed, failed = 0, 0
     failed_files: List[str] = []
-    items = tqdm(wav_files, desc="Baseline inference") if tqdm else wav_files
 
-    for wav_path in items:
-        try:
-            target_audio, _ = load_audio(wav_path, sr=sr, mono=True)
-            target_audio = target_audio.astype(np.float64)
-
-            source_audio = select_source_segment(
-                source_bank, len(target_audio), rng
+    if n_workers <= 1:
+        # ---- Sequential path (default) -----------------------------------
+        items = tqdm(work, desc="Baseline inference") if tqdm else work
+        for item in items:
+            err = _process_one_baseline(
+                item["wav_path"], item["out_path"],
+                source_bank, sr, method, item["file_seed"],
             )
-            target_audio, source_audio = Baseline.match_length(
-                target_audio, source_audio
+            if err is None:
+                processed += 1
+            else:
+                failed += 1
+                failed_files.append(err)
+    else:
+        # ---- Parallel path ------------------------------------------------
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = {
+                pool.submit(
+                    _process_one_baseline,
+                    item["wav_path"], item["out_path"],
+                    source_bank, sr, method, item["file_seed"],
+                ): item["wav_path"]
+                for item in work
+            }
+            items = (
+                tqdm(as_completed(futures), desc="Baseline inference", total=len(futures))
+                if tqdm else as_completed(futures)
             )
+            for future in items:
+                err = future.result()
+                if err is None:
+                    processed += 1
+                else:
+                    failed += 1
+                    failed_files.append(err)
 
-            result = transfer_fn(target_audio, source_audio)
-
-            out_path = make_output_path(
-                wav_path, input_dir, output_dir, suffix="_BASELINE"
-            )
-            save_audio(out_path, result.astype(np.float32), sr)
-            processed += 1
-
-        except Exception:
-            failed += 1
-            failed_files.append(str(wav_path))
-            logger.warning("Failed: %s", wav_path, exc_info=True)
-
-    logger.info("Baseline done: %d processed, %d failed", processed, failed)
-    return {"processed": processed, "failed": failed, "failed_files": failed_files}
+    logger.info(
+        "Baseline done: %d processed, %d skipped, %d failed",
+        processed, skipped, failed,
+    )
+    return {"processed": processed, "failed": failed, "skipped": skipped, "failed_files": failed_files}

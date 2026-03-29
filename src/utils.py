@@ -14,6 +14,9 @@ import librosa
 import numpy as np
 import soundfile as sf
 
+DEFAULT_SAMPLE_RATE: int = 16000
+"""Project-wide default sample rate (Hz)."""
+
 
 def load_audio(
 	path: str | Path,
@@ -104,6 +107,7 @@ def clip_audio(
 		return audio[start_sample:end_sample]
 
 __all__ = [
+	"DEFAULT_SAMPLE_RATE",
 	"load_audio",
 	"save_audio",
 	"to_mono",
