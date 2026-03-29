@@ -20,7 +20,7 @@ DEFAULT_SAMPLE_RATE = 16000
 
 def plot_spectrograms(
     audios: List[np.ndarray],
-    fs: int,
+    sr: int,
     vmin: float = -5,
     vmax: float = 1,
     size: int = 512 + 256,
@@ -32,7 +32,7 @@ def plot_spectrograms(
     for i, audio in enumerate(audios):
         if len(audio.shape) == 2:
             audio = audio[0]
-        _, _, Sxx = scipy_signal.stft(audio, fs=fs, nperseg=size,
+        _, _, Sxx = scipy_signal.stft(audio, fs=sr, nperseg=size,
                                       noverlap=size * 3 // 4)
         logmag = np.log10(np.abs(Sxx) + 1e-7)
         logmag = np.flipud(logmag)
@@ -62,7 +62,7 @@ def plot_feature_from_audio(
     audio: np.ndarray, sr: int = DEFAULT_SAMPLE_RATE, trim: int = -15
 ) -> None:
     """Extract features from raw audio and plot them."""
-    features = compute_features(audio, sr)
+    features = compute_features(audio)
     plot_features(features, trim=trim)
 
 
@@ -99,7 +99,7 @@ def plot_transfer_comparison(
     src: np.ndarray,
     tgt: np.ndarray,
     out: np.ndarray,
-    fs: int,
+    sr: int,
     N: int = 2048,
     H: int = 256,
     save_path: Optional[str] = None,
@@ -112,13 +112,13 @@ def plot_transfer_comparison(
     for ax, (label, sig) in zip(axes, pairs):
         S = _stft(sig, N=N, H=H)
         hN = N // 2 + 1
-        times = np.arange(S.shape[1]) * H / fs
+        times = np.arange(S.shape[1]) * H / sr
         ax.imshow(S, origin='lower', aspect='auto', cmap='magma',
-                  extent=[0, times[-1], 0, fs / 2],
+                  extent=[0, times[-1], 0, sr / 2],
                   vmin=-100, vmax=0)
         ax.set_title(label)
         ax.set_xlabel('Time (s)')
-        ax.set_ylim(0, min(8000, fs / 2))
+        ax.set_ylim(0, min(8000, sr / 2))
     axes[0].set_ylabel('Frequency (Hz)')
 
     plt.tight_layout()
@@ -131,13 +131,13 @@ def plot_transfer_comparison(
 def plot_envelope_comparison(
     src_analysis: Dict[str, Any],
     tgt_analysis: Dict[str, Any],
-    fs: int,
+    sr: int,
     N: int,
     save_path: Optional[str] = None,
 ) -> None:
     """Overlay source and target mean spectral envelopes to show the transfer delta."""
     hN = N // 2 + 1
-    freqs = np.linspace(0, fs / 2, hN)
+    freqs = np.linspace(0, sr / 2, hN)
 
     def mean_env(analysis: Dict[str, Any]) -> np.ndarray:
         voiced = analysis['frames_f0'] > 0
@@ -155,7 +155,7 @@ def plot_envelope_comparison(
     ax.set_xlabel('Frequency (Hz)')
     ax.set_ylabel('Magnitude (dB)')
     ax.set_title('Spectral Envelope Comparison: Source vs Target')
-    ax.set_xlim(0, min(8000, fs / 2))
+    ax.set_xlim(0, min(8000, sr / 2))
     ax.legend(fontsize=9)
     plt.tight_layout()
     if save_path:

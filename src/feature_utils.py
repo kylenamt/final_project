@@ -247,7 +247,7 @@ def auto_adjust_features(
 # ---------------------------------------------------------------------------
 
 def compute_features(
-    audio: np.ndarray, sample_rate: Optional[int] = None
+    audio: np.ndarray
 ) -> AudioFeatures:
     """Extract F0, loudness, and audio features via DDSP/CREPE.
 
@@ -255,8 +255,6 @@ def compute_features(
     ----------
     audio : array-like
         Raw waveform (1-D or batched ``[1, N]``).
-    sample_rate : int, optional
-        Unused – kept for API compatibility.
 
     Returns
     -------
@@ -264,7 +262,6 @@ def compute_features(
         Dict with ``f0_hz``, ``f0_confidence``, ``loudness_db``, ``audio``,
         etc., all as NumPy arrays.
     """
-    _ = sample_rate
     audio_t = tf.convert_to_tensor(audio, dtype=tf.float32)
     ddsp.spectral_ops.reset_crepe()
 

@@ -11,7 +11,6 @@ import argparse
 import copy
 import os
 import pickle
-import sys
 import time
 import warnings
 from pathlib import Path
@@ -26,10 +25,6 @@ import tensorflow.compat.v2 as tf  # type: ignore
 
 import ddsp
 import ddsp.training
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
 
 from model_loading import (
     find_model_dir,

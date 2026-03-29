@@ -31,11 +31,12 @@ package-dir = {"" = "src"}
 py-modules = [
     "utils",
     "baseline",
+    "data_preprocessing",
+    "experiment_pipeline",
     "feature_utils",
     "model_loading",
     "timbre_transfer",
     "visualize",
-    "data_preprocessing",
 ]
 
 [tool.setuptools.packages.find]

@@ -11,6 +11,63 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 
+def trim_silence(
+    audio: np.ndarray,
+    threshold_db: float = -40.0,
+    frame_length: int = 1024,
+    hop_length: int = 256,
+) -> Tuple[np.ndarray, Tuple[int, int]]:
+    """Trim leading and trailing silence from a 1-D waveform.
+
+    Silence is detected using frame RMS in dB.  Frames with loudness
+    below ``threshold_db`` are considered silent.
+
+    Parameters
+    ----------
+    audio:
+        1-D mono waveform.
+    threshold_db:
+        Silence threshold in dBFS.
+    frame_length:
+        Number of samples per analysis frame.
+    hop_length:
+        Hop size between analysis frames.
+
+    Returns
+    -------
+    Tuple[np.ndarray, Tuple[int, int]]
+        ``(trimmed_audio, (start_sample, end_sample))`` where sample
+        indices refer to the original waveform.
+    """
+    n = len(audio)
+    if n == 0:
+        return audio, (0, 0)
+    if frame_length <= 0 or hop_length <= 0:
+        raise ValueError("frame_length and hop_length must be > 0.")
+
+    starts = np.arange(0, max(1, n - frame_length + 1), hop_length)
+    if starts.size == 0:
+        starts = np.array([0])
+
+    rms = np.empty(starts.size, dtype=np.float64)
+    for i, s in enumerate(starts):
+        end = min(s + frame_length, n)
+        frame = audio[s:end]
+        rms[i] = np.sqrt(np.mean(frame * frame) + 1e-12)
+
+    db = 20.0 * np.log10(np.maximum(rms, 1e-12))
+    non_silent = np.where(db >= threshold_db)[0]
+
+    if non_silent.size == 0:
+        return audio, (0, n)
+
+    first = int(non_silent[0])
+    last = int(non_silent[-1])
+    start_sample = int(starts[first])
+    end_sample = int(min(n, starts[last] + frame_length))
+    return audio[start_sample:end_sample], (start_sample, end_sample)
+
+
 def clip_silence(
     in_path: str | Path,
     out_path: Optional[str | Path] = None,
@@ -22,8 +79,7 @@ def clip_silence(
 ) -> Tuple[np.ndarray, int, Tuple[int, int]]:
     """Trim leading and trailing silence from an audio file.
 
-    Silence is detected using frame RMS in dB. Frames with loudness below
-    ``threshold_db`` are considered silent.
+    Delegates to :func:`trim_silence` for the core detection logic.
 
     Parameters
     ----------
@@ -57,33 +113,11 @@ def clip_silence(
 
     # Work on a mono view for silence detection.
     y = audio[:, 0] if audio.shape[1] == 1 else audio.mean(axis=1)
-    n = len(y)
-    if n == 0:
-        raise ValueError("Input audio is empty.")
-    if frame_length <= 0 or hop_length <= 0:
-        raise ValueError("frame_length and hop_length must be > 0.")
 
-    starts = np.arange(0, max(1, n - frame_length + 1), hop_length)
-    if starts.size == 0:
-        starts = np.array([0])
-
-    rms = np.empty(starts.size, dtype=np.float64)
-    for i, start in enumerate(starts):
-        end = min(start + frame_length, n)
-        frame = y[start:end]
-        rms[i] = np.sqrt(np.mean(frame * frame) + 1e-12)
-
-    db = 20.0 * np.log10(np.maximum(rms, 1e-12))
-    non_silent = np.where(db >= threshold_db)[0]
-
-    # If all frames are silent, keep the original waveform to avoid empty output.
-    if non_silent.size == 0:
-        start_sample, end_sample = 0, n
-    else:
-        first = int(non_silent[0])
-        last = int(non_silent[-1])
-        start_sample = int(starts[first])
-        end_sample = int(min(n, starts[last] + frame_length))
+    _, (start_sample, end_sample) = trim_silence(
+        y, threshold_db=threshold_db, frame_length=frame_length,
+        hop_length=hop_length,
+    )
 
     trimmed = audio[start_sample:end_sample, :]
     to_write = trimmed[:, 0] if trimmed.shape[1] == 1 else trimmed

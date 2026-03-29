@@ -623,7 +623,7 @@ class BaselineSMS:
 
         n_tgt = len(tgt_dec.frames_freqs)
 
-        # ── Spectral envelope only: resample source SP to target frame count
+        # ── Spectral envelope only: resample source SP to target frame count``
         src_sp_resampled = _resample_frames(src_dec.sp, n_tgt)
         new_sp = alpha * src_sp_resampled + (1.0 - alpha) * tgt_dec.sp
 

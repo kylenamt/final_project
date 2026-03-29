@@ -7,12 +7,26 @@ model directory, and to restore a ``ddsp.training.models.Autoencoder``.
 import glob
 import os
 import re
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, TypedDict
 
 import tensorflow.compat.v2 as tf # type: ignore
 
 import gin
 import ddsp.training
+
+
+class ModelResult(TypedDict):
+    """Return type for :func:`load_ddsp_model`."""
+    model: object
+    model_dir: str
+    gin_file: str
+    checkpoint: str
+
+
+class PretrainedResult(TypedDict):
+    """Return type for :func:`load_pretrained_model`."""
+    model_dir: str
+    gin_file: str
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +122,7 @@ def restore_autoencoder(model_dir: str):
 
 def load_ddsp_model(
     model_path: str, gin_file: Optional[str] = None
-) -> Dict[str, object]:
+) -> ModelResult:
     """Load a DDSP Autoencoder model from a path or gin file.
 
     Returns a dict with keys ``model``, ``model_dir``, ``gin_file``, and
@@ -134,7 +148,7 @@ def load_ddsp_model(
 
 def load_models(
     model_paths: Iterable[str], gin_file: Optional[str] = None
-) -> Dict[str, Dict[str, object]]:
+) -> Dict[str, ModelResult]:
     """Load multiple DDSP models keyed by directory basename."""
     return {
         os.path.basename(os.path.abspath(p)): load_ddsp_model(p, gin_file=gin_file)
@@ -153,7 +167,7 @@ GCS_CKPT_DIR = "gs://ddsp/models/timbre_transfer_colab/2021-07-08"
 def load_pretrained_model(
     model_name: str,
     local_dir: str = "artifacts/pretrained",
-) -> Dict[str, str]:
+) -> PretrainedResult:
     """Download a pretrained DDSP model from Google Cloud Storage.
 
     Uses ``tf.io.gfile`` for GCS access (no ``gsutil`` needed).
