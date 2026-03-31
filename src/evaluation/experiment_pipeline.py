@@ -1,16 +1,18 @@
-"""Experiment pipeline: batch DDSP inference and WORLD vocoder baseline.
+"""Experiment pipeline: batch DDSP inference, WORLD vocoder baseline, and evaluation.
 
-Provides two main functions:
-- ``run_synthesize_dir`` – DDSP timbre transfer over a directory of WAV files.
-- ``run_vocoder_dir``    – WORLD vocoder baseline over the same directory using
-                           a randomly-sampled "source bank" of solo instrument audio.
+Provides three main functions:
+- ``run_synthesize_dir``  – DDSP timbre transfer over a directory of WAV files.
+- ``run_vocoder_dir``     – WORLD vocoder baseline over the same directory using
+                            a randomly-sampled "source bank" of solo instrument audio.
+- ``run_evaluation_dir``  – Per-file timbre loss computation between original and
+                            transferred audio folders.
 
 Resume behaviour
 ----------------
-Both functions skip files whose output already exists and is valid (> 44 bytes).
+All functions skip files whose output already exists and is valid.
 To pause mid-run just interrupt the kernel (Ctrl-C / Kernel > Interrupt).
-Already-written files are preserved and will be skipped automatically on the
-next run — no separate checkpoint file is needed.
+Already-written files / CSV rows are preserved and will be skipped automatically
+on the next run — no separate checkpoint file is needed.
 """
 
 from __future__ import annotations
@@ -22,8 +24,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
 import numpy as np
+import pandas as pd
 
 from data_preprocessing import trim_silence
+from .loss import Loss
+from .timbre_metrics import TimbreMetrics
 from utils import load_audio, save_audio
 from feature_utils import (
     auto_adjust_features,
@@ -51,6 +56,7 @@ __all__ = [
     "select_source_segment",
     "run_synthesize_dir",
     "run_vocoder_dir",
+    "run_evaluation_dir",
 ]
 
 
@@ -444,3 +450,245 @@ def run_vocoder_dir(
         processed, skipped, failed,
     )
     return {"processed": processed, "failed": failed, "skipped": skipped, "failed_files": failed_files}
+
+
+# ---------------------------------------------------------------------------
+# Evaluation pipeline — reference-based comparison
+# ---------------------------------------------------------------------------
+
+
+def _evaluate_one_file_against_reference(
+    file_path: Path,
+    ref_2d: np.ndarray,
+    feat_keys: List[str],
+    rel_path: str,
+    sr: int,
+) -> Optional[Dict[str, Any]]:
+    """Compare one synthesised file's feature distribution to the reference.
+
+    Returns a dict row on success, or ``None`` on error.
+    Module-level function for :class:`~concurrent.futures.ProcessPoolExecutor`.
+    """
+    try:
+        tm = TimbreMetrics(sample_rate=sr)
+        loss = Loss()
+
+        series = tm.extract_series_from_file(file_path)
+        if not series:
+            logger.warning("Empty features: %s", rel_path)
+            return None
+
+        available = sorted(set(series.keys()) & set(feat_keys))
+        if not available:
+            logger.warning("No matching features: %s", rel_path)
+            return None
+
+        # Build column indices that match feat_keys ordering
+        col_idx = [feat_keys.index(k) for k in available]
+        file_2d = np.column_stack([series[k] for k in available])
+        ref_subset = ref_2d[:, col_idx]
+
+        distances = loss.evaluate(file_2d, ref_subset)
+
+        return {"file": rel_path, **distances}
+
+    except Exception:
+        logger.warning("Pairwise evaluation failed: %s", rel_path, exc_info=True)
+        return None
+
+
+def run_evaluation_dir(
+    reference_dir: str | Path,
+    synthesized_dirs: Dict[str, str | Path],
+    output_csv: str | Path,
+    sr: int = DEFAULT_SAMPLE_RATE,
+    n_workers: int = 1,
+    max_frames: int = 10000,
+) -> Dict[str, pd.DataFrame]:
+    """Compare synthesised audio folders against a reference set.
+
+    Uses the solo instrument recordings in *reference_dir* as the ground-truth
+    timbre distribution.  For each method folder in *synthesized_dirs*, two
+    comparison strategies are applied:
+
+    **Strategy 1 — distribution-level**: concatenate all per-frame features
+    from the folder into one array and compare against the concatenated
+    reference.  Produces one row per method.
+
+    **Strategy 2 — pairwise**: compare each individual file's feature
+    distribution against the full reference.  Produces one row per file.
+
+    Both strategies use :meth:`~evaluation.loss.Loss.evaluate` (MMD +
+    Wasserstein).
+
+    Resume behaviour
+    ----------------
+    Pairwise results are appended to ``{output_csv}_pairwise.csv``.  Files
+    already present (keyed by ``(method, file)``) are skipped on re-run.
+
+    Parameters
+    ----------
+    reference_dir : directory of reference instrument WAV files (e.g. solo
+        violin).
+    synthesized_dirs : mapping of method name to directory, e.g.
+        ``{"ddsp": "path/to/ddsp", "baseline": "path/to/baseline"}``.
+    output_csv : base path for output CSVs.  Two files are written:
+        ``{stem}_distribution.csv`` and ``{stem}_pairwise.csv``.
+    sr : sample rate.
+    n_workers : number of parallel workers for feature extraction and
+        pairwise evaluation.
+    max_frames : maximum frames to use for Strategy 1 distribution
+        comparison (sub-sampled for computational efficiency, since MMD is
+        O(n^2)).
+
+    Returns
+    -------
+    dict
+        ``{"distribution": pd.DataFrame, "pairwise": pd.DataFrame}``
+    """
+    output_csv = Path(output_csv)
+    dist_csv = output_csv.parent / f"{output_csv.stem}_distribution.csv"
+    pair_csv = output_csv.parent / f"{output_csv.stem}_pairwise.csv"
+
+    # ------------------------------------------------------------------
+    # 1. Build reference feature set
+    # ------------------------------------------------------------------
+    logger.info("Building reference feature set from %s", reference_dir)
+    tm = TimbreMetrics(sample_rate=sr)
+    ref_features = tm.extract_from_dir(reference_dir, n_workers=n_workers)
+    feat_keys = sorted(ref_features.keys())
+    ref_2d = np.column_stack([ref_features[k] for k in feat_keys])
+
+    logger.info(
+        "Reference: %d frames, %d features", ref_2d.shape[0], ref_2d.shape[1],
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Resume: load existing pairwise results
+    # ------------------------------------------------------------------
+    done_pairs: set[tuple[str, str]] = set()
+    existing_pair_rows: List[Dict[str, Any]] = []
+    if pair_csv.exists():
+        df_existing = pd.read_csv(pair_csv)
+        done_pairs = set(
+            zip(df_existing["method"].tolist(), df_existing["file"].tolist())
+        )
+        existing_pair_rows = df_existing.to_dict("records")
+        logger.info("Resuming pairwise: %d rows in %s", len(done_pairs), pair_csv)
+
+    dist_rows: List[Dict[str, Any]] = []
+    new_pair_rows: List[Dict[str, Any]] = []
+    rng = np.random.default_rng(42)
+    loss = Loss()
+
+    for method_name, synth_dir in synthesized_dirs.items():
+        logger.info("Evaluating method '%s' from %s", method_name, synth_dir)
+
+        # --------------------------------------------------------------
+        # Strategy 1 — distribution-level comparison
+        # --------------------------------------------------------------
+        synth_features = tm.extract_from_dir(synth_dir, n_workers=n_workers)
+        synth_2d = np.column_stack([synth_features[k] for k in feat_keys])
+
+        # Sub-sample for computational efficiency
+        ref_sub = ref_2d
+        synth_sub = synth_2d
+        if ref_sub.shape[0] > max_frames:
+            idx = rng.choice(ref_sub.shape[0], max_frames, replace=False)
+            ref_sub = ref_sub[idx]
+        if synth_sub.shape[0] > max_frames:
+            idx = rng.choice(synth_sub.shape[0], max_frames, replace=False)
+            synth_sub = synth_sub[idx]
+
+        dist_result = loss.evaluate(synth_sub, ref_sub)
+        dist_rows.append({
+            "method": method_name,
+            "n_files": len(collect_wav_files(synth_dir)),
+            "total_frames": synth_2d.shape[0],
+            **dist_result,
+        })
+        logger.info(
+            "Strategy 1 [%s]: mmd=%.6f, wasserstein=%.6f",
+            method_name, dist_result["mmd"], dist_result["wasserstein"],
+        )
+
+        # --------------------------------------------------------------
+        # Strategy 2 — pairwise file-vs-reference comparison
+        # --------------------------------------------------------------
+        synth_dir_path = Path(synth_dir)
+        wav_files = collect_wav_files(synth_dir_path)
+        work = []
+        skipped = 0
+        for wf in wav_files:
+            rel = str(wf.relative_to(synth_dir_path))
+            if (method_name, rel) in done_pairs:
+                skipped += 1
+                continue
+            work.append({"path": wf, "rel": rel})
+
+        logger.info(
+            "Strategy 2 [%s]: %d to process, %d skipped",
+            method_name, len(work), skipped,
+        )
+
+        processed, failed = 0, 0
+        if n_workers <= 1:
+            items = tqdm(work, desc=f"Pairwise [{method_name}]") if tqdm else work
+            for item in items:
+                row = _evaluate_one_file_against_reference(
+                    item["path"], ref_2d, feat_keys, item["rel"], sr,
+                )
+                if row is not None:
+                    row["method"] = method_name
+                    new_pair_rows.append(row)
+                    processed += 1
+                else:
+                    failed += 1
+        else:
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                futures = {
+                    pool.submit(
+                        _evaluate_one_file_against_reference,
+                        item["path"], ref_2d, feat_keys, item["rel"], sr,
+                    ): item
+                    for item in work
+                }
+                items = (
+                    tqdm(
+                        as_completed(futures),
+                        desc=f"Pairwise [{method_name}]",
+                        total=len(futures),
+                    )
+                    if tqdm else as_completed(futures)
+                )
+                for future in items:
+                    row = future.result()
+                    if row is not None:
+                        row["method"] = method_name
+                        new_pair_rows.append(row)
+                        processed += 1
+                    else:
+                        failed += 1
+
+        logger.info(
+            "Strategy 2 [%s] done: %d processed, %d skipped, %d failed",
+            method_name, processed, skipped, failed,
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Save results
+    # ------------------------------------------------------------------
+    df_dist = pd.DataFrame(dist_rows)
+    if not df_dist.empty:
+        dist_csv.parent.mkdir(parents=True, exist_ok=True)
+        df_dist.to_csv(dist_csv, index=False)
+        logger.info("Distribution results saved → %s", dist_csv)
+
+    all_pair_rows = existing_pair_rows + new_pair_rows
+    df_pair = pd.DataFrame(all_pair_rows)
+    if not df_pair.empty:
+        pair_csv.parent.mkdir(parents=True, exist_ok=True)
+        df_pair.to_csv(pair_csv, index=False)
+        logger.info("Pairwise results saved → %s", pair_csv)
+
+    return {"distribution": df_dist, "pairwise": df_pair}

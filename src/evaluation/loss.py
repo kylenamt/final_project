@@ -20,7 +20,7 @@ Quick usage::
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 from scipy.spatial.distance import cdist
@@ -196,3 +196,20 @@ class Loss:
             total += _wasserstein_1d(proj_x, proj_y)
 
         return float(total / self.n_projections)
+
+    def evaluate(self, X: np.ndarray, Y: np.ndarray) -> Dict[str, float]:
+        """Compute both MMD and Wasserstein distance in one call.
+
+        Parameters
+        ----------
+        X : np.ndarray, shape ``(m,)`` or ``(m, d)``
+            Samples from the first distribution.
+        Y : np.ndarray, shape ``(n,)`` or ``(n, d)``
+            Samples from the second distribution.
+
+        Returns
+        -------
+        dict
+            ``{"mmd": float, "wasserstein": float}``
+        """
+        return {"mmd": self.mmd(X, Y), "wasserstein": self.wasserstein(X, Y)}

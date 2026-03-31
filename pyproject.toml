@@ -32,7 +32,6 @@ py-modules = [
     "utils",
     "baseline",
     "data_preprocessing",
-    "experiment_pipeline",
     "feature_utils",
     "model_loading",
     "timbre_transfer",

@@ -123,7 +123,7 @@ class Baseline:
         target_y: np.ndarray,
         source_y: np.ndarray,
         output_path: Optional[str] = None,
-        use_crepe: bool = False,
+        use_crepe: bool = True,
     ) -> np.ndarray:
         """Transfer: target F0 + source SP + source AP.
 

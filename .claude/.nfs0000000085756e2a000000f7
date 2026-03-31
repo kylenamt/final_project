@@ -42,7 +42,20 @@
       "Bash(CONDA_ENV=/u/37/thieun1/unix/anaconda3/envs/conda_env3.10)",
       "Read(//m/home/home3/37/thieun1/unix/Project/final_project/$CONDA_ENV/lib/**)",
       "Bash(jupyter kernelspec:*)",
-      "Bash(LD_LIBRARY_PATH=/u/37/thieun1/unix/anaconda3/envs/conda_env3.10/lib python3 -c \"import tensorflow as tf; gpus = tf.config.list_physical_devices\\(''''GPU''''\\); print\\(f''''GPUs found: {len\\(gpus\\)}''''\\); [print\\(f''''  {g}''''\\) for g in gpus]\")"
+      "Bash(LD_LIBRARY_PATH=/u/37/thieun1/unix/anaconda3/envs/conda_env3.10/lib python3 -c \"import tensorflow as tf; gpus = tf.config.list_physical_devices\\(''''GPU''''\\); print\\(f''''GPUs found: {len\\(gpus\\)}''''\\); [print\\(f''''  {g}''''\\) for g in gpus]\")",
+      "Bash(python3 -c \":*)",
+      "Bash(find /m/home/home3/37/thieun1/unix/Project/final_project -type f \\\\\\(-name *.csv -o -name *.json -o -name *eval* -o -name *result* -o -name *stat* \\\\\\))",
+      "Bash(find /m/home/home3/37/thieun1/unix/Project/final_project/data/processed/voice/Full_transfered -type f -name *.wav)",
+      "Bash(find /m/home/home3/37/thieun1/unix/Project/final_project/data/processed/voice/Full_baseline -type f -name *.wav)",
+      "Bash(grep -n \"import logging\\\\|getLogger\" /m/home/home3/37/thieun1/unix/Project/final_project/src/evaluation/*.py)",
+      "Bash(find /m/home/home3/37/thieun1/unix/Project/final_project/data/raw/solo_violin/ -name *.wav)",
+      "Bash(find /m/home/home3/37/thieun1/unix/Project/final_project/data/processed/voice/Full_transfered/ -name *.wav)",
+      "Bash(find /m/home/home3/37/thieun1/unix/Project/final_project/data/raw/voice/FULL/ -name *.wav)",
+      "Bash(find /m/home/home3/37/thieun1/unix/Project/final_project/data/processed/voice/Full_baseline/ -name *.wav)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''experiment_pipeline.py''\\).read\\(\\)\\); print\\(''experiment_pipeline.py: OK''\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''visualize.py''\\).read\\(\\)\\); print\\(''visualize.py: OK''\\)\")",
+      "Bash(python3 -c \"import json; nb = json.load\\(open\\(''demo/evaluation_pipeline.ipynb''\\)\\); print\\(f''Notebook: OK \\({len\\(nb[\"\"cells\"\"]\\)} cells\\)''\\)\")",
+      "Bash(python3 -c \"from experiment_pipeline import run_evaluation_dir, _extract_and_concat_features; print\\(''Import OK''\\); import inspect; sig = inspect.signature\\(run_evaluation_dir\\); print\\(f''run_evaluation_dir{sig}''\\)\")"
     ]
   }
 }
