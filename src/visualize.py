@@ -6,7 +6,10 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import matplotlib
-matplotlib.use('Agg')
+# Only set Agg backend if not in interactive environment (e.g., Jupyter)
+import sys
+if 'ipykernel' not in sys.modules:
+    matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np
 import pandas as pd
@@ -25,6 +28,7 @@ __all__ = [
     "plot_features",
     "plot_feature_from_audio",
     "plot_series",
+    "plot_world_params",
     "plot_transfer_comparison",
     "plot_envelope_comparison",
     "plot_loss_by_group",
@@ -39,10 +43,11 @@ __all__ = [
 
 def plot_spectrograms(
     audios: List[np.ndarray],
-    sr: int,
+    sr: int = DEFAULT_SAMPLE_RATE,
     vmin: float = -5,
     vmax: float = 1,
     size: int = 512 + 256,
+    titles: Optional[List[str]] = None,
 ) -> None:
     """Plot STFT log-magnitude spectrograms for a list of audio arrays."""
     if not isinstance(audios, list) or len(audios) == 0:
@@ -60,7 +65,8 @@ def plot_spectrograms(
         plt.yticks([])
         plt.xlabel('Time')
         plt.ylabel('Frequency')
-        plt.title(f'Audio {i+1}')
+        title = titles[i] if titles and i < len(titles) else f'Audio {i+1}'
+        plt.title(title)
         plt.show()
 
 
@@ -97,6 +103,81 @@ def plot_series(
     plt.title(title)
     plt.legend()
     plt.tight_layout()
+    plt.show()
+
+
+def plot_world_params(
+    f0_list: List[np.ndarray],
+    sp_list: List[np.ndarray],
+    ap_list: List[np.ndarray],
+    sr: int = DEFAULT_SAMPLE_RATE,
+    labels: Optional[List[str]] = None,
+    save_path: Optional[str] = None,
+) -> None:
+    """Plot WORLD vocoder parameters (F0, SP, AP) for multiple audio signals.
+
+    Each signal gets one row of three plots:
+    - F0: line plot (1-D pitch contour)
+    - SP: heatmap (2-D spectral envelope)
+    - AP: heatmap (2-D aperiodicity)
+
+    Parameters
+    ----------
+    f0_list : list of 1-D arrays, shape (n_frames,)
+    sp_list : list of 2-D arrays, shape (n_frames, n_freq_bins)
+    ap_list : list of 2-D arrays, shape (n_frames, n_freq_bins)
+    sr : sample rate, used to label the frequency axis.
+    labels : optional display names for each signal.
+    save_path : if given, save the figure to this path.
+    """
+    # Accept raw arrays (single signal) or lists of arrays (multiple signals)
+    if isinstance(f0_list, np.ndarray) and f0_list.ndim == 1:
+        f0_list, sp_list, ap_list = [f0_list], [sp_list], [ap_list]
+
+    n = len(f0_list)
+    if labels is None:
+        labels = [f"Audio {i + 1}" for i in range(n)]
+
+    fig, axes = plt.subplots(n, 3, figsize=(18, 4 * n), squeeze=False)
+
+    for i in range(n):
+        f0, sp, ap = f0_list[i], sp_list[i], ap_list[i]
+        n_freq_bins = sp.shape[1]
+        freqs = np.linspace(0, sr / 2, n_freq_bins)
+
+        # -- F0: line plot --
+        ax_f0 = axes[i, 0]
+        frames = np.arange(len(f0))
+        ax_f0.plot(frames, f0, color="steelblue", lw=1)
+        ax_f0.set_ylabel("F0 (Hz)")
+        ax_f0.set_xlabel("Frame")
+        ax_f0.set_title(f"{labels[i]} — F0")
+
+        # -- SP: heatmap (log-scale spectral envelope) --
+        ax_sp = axes[i, 1]
+        sp_db = 10 * np.log10(sp.T + 1e-12)
+        ax_sp.imshow(
+            sp_db, origin="lower", aspect="auto", cmap="magma",
+            extent=[0, sp.shape[0], freqs[0], freqs[-1]],
+        )
+        ax_sp.set_ylabel("Frequency (Hz)")
+        ax_sp.set_xlabel("Frame")
+        ax_sp.set_title(f"{labels[i]} — Spectral Envelope")
+
+        # -- AP: heatmap (aperiodicity) --
+        ax_ap = axes[i, 2]
+        ax_ap.imshow(
+            ap.T, origin="lower", aspect="auto", cmap="inferno",
+            extent=[0, ap.shape[0], freqs[0], freqs[-1]],
+        )
+        ax_ap.set_ylabel("Frequency (Hz)")
+        ax_ap.set_xlabel("Frame")
+        ax_ap.set_title(f"{labels[i]} — Aperiodicity")
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        logger.info("Saved plot → %s", save_path)
     plt.show()
 
 

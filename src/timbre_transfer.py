@@ -3,20 +3,14 @@
 Provides :class:`TimbreTransfer` — a stateful wrapper around a DDSP
 Autoencoder checkpoint that loads the model once and exposes a
 :meth:`synthesize` method for inference.
-
-Low-level helpers (:func:`load_model`, :func:`resynthesize`) are kept as
-module-level functions for backward compatibility with existing notebooks.
 """
 
 from __future__ import annotations
 
-import copy
 import logging
-import os
-import pickle
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import gin
 import numpy as np
@@ -26,10 +20,9 @@ import ddsp
 import ddsp.training
 
 from model_loading import (
+    find_gin_file,
     find_model_dir,
-    load_pretrained_model,
     restore_autoencoder,
-    PRETRAINED_MODELS,
 )
 from feature_utils import compute_features, trim_features
 from utils import DEFAULT_SAMPLE_RATE
@@ -38,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Stateful class API (recommended)
+# Public API
 # ---------------------------------------------------------------------------
 
 class TimbreTransfer:
@@ -57,15 +50,33 @@ class TimbreTransfer:
         Sample rate (Hz).
     """
 
+    @classmethod
+    def from_path(
+        cls,
+        model_path: str | Path,
+        gin_file: str | Path | None = None,
+        sr: int = DEFAULT_SAMPLE_RATE,
+        gin_overrides: Sequence[str] | None = None,
+    ) -> "TimbreTransfer":
+        """Create a :class:`TimbreTransfer` from a model path.
+
+        Automatically discovers the model directory and gin config file.
+        """
+        model_dir = find_model_dir(str(model_path))
+        gin_path = str(gin_file) if gin_file else find_gin_file(model_dir)
+        return cls(model_dir, gin_path, sr=sr, gin_overrides=gin_overrides)
+
     def __init__(
         self,
         model_dir: str | Path,
         gin_file: str | Path,
         sr: int = DEFAULT_SAMPLE_RATE,
+        gin_overrides: Sequence[str] | None = None,
     ) -> None:
         self.model_dir = str(model_dir)
         self.gin_file = str(gin_file)
         self.sr = sr
+        self.gin_overrides: List[str] = list(gin_overrides) if gin_overrides else []
         self._model: Any = None
         self._time_steps: int = 0
         self._n_samples: int = 0
@@ -94,6 +105,8 @@ class TimbreTransfer:
         """
         with gin.unlock_config():
             gin.parse_config_file(self.gin_file, skip_unknown=True)
+            if self.gin_overrides:
+                gin.parse_config(self.gin_overrides)
 
         self._time_steps = int(
             gin.query_parameter("F0LoudnessPreprocessor.time_steps")
@@ -125,7 +138,11 @@ class TimbreTransfer:
         logger.info("Model restored in %.1f s", time.time() - start)
 
     def synthesize(self, audio_features: Dict[str, Any]) -> np.ndarray:
-        """Run inference on a single chunk of audio features.
+        """Synthesize audio from features of arbitrary duration.
+
+        If the features span more than one model chunk (``time_steps``
+        frames / ``n_samples`` samples), the input is automatically split
+        into chunks, each synthesized independently, then concatenated.
 
         Parameters
         ----------
@@ -143,97 +160,86 @@ class TimbreTransfer:
             raise RuntimeError(
                 "Model not loaded. Call .load() before .synthesize()."
             )
+
+        n_frames = len(audio_features["f0_hz"])
+        n_chunks = int(np.ceil(n_frames / self._time_steps))
+
+        chunks = []
+        for i in range(n_chunks):
+            chunk = self._slice_chunk(audio_features, i)
+            actual_samples = self._chunk_sample_len(audio_features, i)
+
+            gen = self._synthesize_single(chunk)
+
+            # Trim padding from the last chunk
+            if actual_samples < self._n_samples:
+                gen = gen[:actual_samples]
+
+            chunks.append(gen)
+            if n_chunks > 1:
+                logger.info("Chunk %d/%d synthesized", i + 1, n_chunks)
+
+        return np.concatenate(chunks)
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _synthesize_single(self, chunk: Dict[str, Any]) -> np.ndarray:
+        """Run the model on a single, correctly-sized chunk."""
         start = time.time()
-        outputs = self._model(audio_features, training=False)
+        outputs = self._model(chunk, training=False)
         audio_gen = self._model.get_audio_from_outputs(outputs)
         logger.debug("Synthesis took %.1f s", time.time() - start)
         return np.array(audio_gen)[0]
 
+    def _slice_chunk(
+        self, audio_features: Dict[str, Any], idx: int
+    ) -> Dict[str, Any]:
+        """Extract chunk *idx* from full-length features, padded to model size."""
+        n_frames = len(audio_features["f0_hz"])
+        n_audio = audio_features["audio"].shape[-1]
 
-# ---------------------------------------------------------------------------
-# Function API (backward-compatible wrappers)
-# ---------------------------------------------------------------------------
+        f_start = idx * self._time_steps
+        f_end = min(f_start + self._time_steps, n_frames)
+        s_start = idx * self._n_samples
+        s_end = min(s_start + self._n_samples, n_audio)
 
+        chunk: Dict[str, Any] = {}
 
-def load_model(
-    model_dir: str,
-    gin_file: str,
-    audio: np.ndarray,
-    audio_features: Dict[str, Any],
-) -> tuple:
-    """Load a DDSP model and prepare features for inference.
+        # Feature arrays (1-D)
+        for key in ("f0_hz", "f0_confidence", "loudness_db"):
+            feat = audio_features[key][f_start:f_end]
+            pad_needed = self._time_steps - len(feat)
+            if pad_needed > 0:
+                pad_val = (
+                    float(audio_features["loudness_db"].min())
+                    if key == "loudness_db"
+                    else 0.0
+                )
+                feat = np.pad(feat, (0, pad_needed), constant_values=pad_val)
+            chunk[key] = feat
 
-    Parameters
-    ----------
-    model_dir : str
-        Path to the checkpoint directory.
-    gin_file : str
-        Path to the operative gin config.
-    audio : np.ndarray
-        Reference audio used to infer alignment dimensions (shape ``[1, N]``).
-    audio_features : dict
-        Reference features (output of :func:`compute_features`).
+        # Audio array (2-D: batch × samples)
+        audio_slice = audio_features["audio"][:, s_start:s_end]
+        pad_needed = self._n_samples - audio_slice.shape[-1]
+        if pad_needed > 0:
+            audio_slice = np.pad(
+                audio_slice, ((0, 0), (0, pad_needed)), constant_values=0.0
+            )
+        chunk["audio"] = audio_slice
 
-    Returns
-    -------
-    tuple
-        ``(model, trimmed_audio_features)``
-    """
-    with gin.unlock_config():
-        gin.parse_config_file(gin_file, skip_unknown=True)
+        return chunk
 
-    time_steps_train = gin.query_parameter("F0LoudnessPreprocessor.time_steps")
-    n_samples_train = gin.query_parameter("Harmonic.n_samples")
-    hop_size = int(n_samples_train / time_steps_train)
-
-    time_steps = int(audio.shape[1] / hop_size)
-    n_samples = time_steps * hop_size
-
-    gin_params = [
-        f"Harmonic.n_samples = {n_samples}",
-        f"FilteredNoise.n_samples = {n_samples}",
-        f"F0LoudnessPreprocessor.time_steps = {time_steps}",
-        "oscillator_bank.use_angular_cumsum = True",
-    ]
-    with gin.unlock_config():
-        gin.parse_config(gin_params)
-
-    audio_features = trim_features(audio_features, time_steps, n_samples)
-
-    model = restore_autoencoder(model_dir)
-
-    start_time = time.time()
-    _ = model(audio_features, training=False)  # type: ignore
-    logger.info("Model restored in %.1f s", time.time() - start_time)
-    return model, audio_features
-
-
-def resynthesize(model: Any, audio_features: Dict[str, Any]) -> np.ndarray:
-    """Run a forward pass through *model* and return the generated audio.
-
-    Parameters
-    ----------
-    model : ddsp.training.models.Autoencoder
-        A restored DDSP model.
-    audio_features : dict
-        Feature dictionary for one chunk.
-
-    Returns
-    -------
-    np.ndarray
-        Synthesized audio (1-D).
-    """
-    start_time = time.time()
-    outputs = model(audio_features, training=False)
-    audio_gen = model.get_audio_from_outputs(outputs)
-    logger.debug("Synthesis took %.1f s", time.time() - start_time)
-    audio_gen = np.array(audio_gen)[0]
-    return audio_gen
+    def _chunk_sample_len(
+        self, audio_features: Dict[str, Any], idx: int
+    ) -> int:
+        """Return the number of *real* (unpadded) audio samples in chunk *idx*."""
+        n_audio = audio_features["audio"].shape[-1]
+        s_start = idx * self._n_samples
+        return min(self._n_samples, n_audio - s_start)
 
 
 __all__ = [
-    "DEFAULT_SAMPLE_RATE",
     "TimbreTransfer",
-    "load_model",
-    "resynthesize",
 ]

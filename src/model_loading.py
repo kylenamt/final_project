@@ -8,7 +8,7 @@ import glob
 import logging
 import os
 import re
-from typing import Dict, Iterable, Optional, TypedDict
+from typing import Optional, TypedDict
 
 import tensorflow.compat.v2 as tf  # type: ignore
 
@@ -18,24 +18,14 @@ import ddsp.training
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ModelResult",
     "PretrainedResult",
     "find_model_dir",
+    "find_gin_file",
     "find_latest_checkpoint",
     "restore_autoencoder",
-    "load_ddsp_model",
-    "load_models",
     "load_pretrained_model",
     "PRETRAINED_MODELS",
 ]
-
-
-class ModelResult(TypedDict):
-    """Return type for :func:`load_ddsp_model`."""
-    model: object
-    model_dir: str
-    gin_file: str
-    checkpoint: str
 
 
 class PretrainedResult(TypedDict):
@@ -48,20 +38,12 @@ class PretrainedResult(TypedDict):
 # Gin / checkpoint discovery
 # ---------------------------------------------------------------------------
 
-def _select_gin_file(model_path: str, model_dir: str, gin_file: Optional[str] = None) -> str:
-    """Return the gin config path to use.
+def find_gin_file(model_dir: str) -> str:
+    """Find the best gin config in *model_dir*.
 
-    Resolution order:
-    1. Explicit *gin_file* if given.
-    2. *model_path* itself, if it is a ``.gin`` file.
-    3. The ``operative_config-<step>.gin`` with the highest step number.
-    4. The first ``.gin`` found alphabetically.
+    Prefers ``operative_config-<step>.gin`` with the highest step number.
+    Falls back to the first ``.gin`` file alphabetically.
     """
-    if gin_file:
-        return gin_file
-    if os.path.isfile(model_path) and model_path.endswith(".gin"):
-        return model_path
-
     gin_candidates = sorted(glob.glob(os.path.join(model_dir, "*.gin")))
     if not gin_candidates:
         raise FileNotFoundError(f"No gin file found under {model_dir}")
@@ -129,46 +111,6 @@ def restore_autoencoder(model_dir: str):
     ckpt_path = find_latest_checkpoint(model_dir)
     model.restore(ckpt_path) # type: ignore
     return model
-
-
-# ---------------------------------------------------------------------------
-# Full model loading
-# ---------------------------------------------------------------------------
-
-def load_ddsp_model(
-    model_path: str, gin_file: Optional[str] = None
-) -> ModelResult:
-    """Load a DDSP Autoencoder model from a path or gin file.
-
-    Returns a dict with keys ``model``, ``model_dir``, ``gin_file``, and
-    ``checkpoint``.
-    """
-    model_dir = find_model_dir(model_path)
-    gin_path = _select_gin_file(model_path, model_dir, gin_file)
-
-    with gin.unlock_config():
-        gin.clear_config()
-        gin.parse_config_file(gin_path, skip_unknown=True)
-
-    model = restore_autoencoder(model_dir)
-    ckpt_path = find_latest_checkpoint(model_dir)
-
-    return {
-        "model": model,
-        "model_dir": model_dir,
-        "gin_file": gin_path,
-        "checkpoint": ckpt_path,
-    }
-
-
-def load_models(
-    model_paths: Iterable[str], gin_file: Optional[str] = None
-) -> Dict[str, ModelResult]:
-    """Load multiple DDSP models keyed by directory basename."""
-    return {
-        os.path.basename(os.path.abspath(p)): load_ddsp_model(p, gin_file=gin_file)
-        for p in model_paths
-    }
 
 
 # ---------------------------------------------------------------------------

@@ -21,9 +21,8 @@ import soundfile as sf
 from ddsp.spectral_ops import compute_f0
 from scipy.interpolate import interp1d
 from scipy.signal import get_window
-
 try:
-    from sms_tools.core import (
+    from smstools.core import (
         dft_analysis,
         estimate_f0_hps,
         harmonic_analysis,
@@ -32,7 +31,7 @@ try:
         synthesize_harmonics,
         synthesize_stochastic,
     )
-    from sms_tools.audio_io import read_wav, write_wav
+    from smstools.audio_io import read_wav, write_wav
     _HAS_SMS_TOOLS = True
 except ImportError:
     _HAS_SMS_TOOLS = False

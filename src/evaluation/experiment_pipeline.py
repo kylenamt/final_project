@@ -37,7 +37,7 @@ from feature_utils import (
     shift_f0,
     shift_loudness,
 )
-from timbre_transfer import load_model, resynthesize
+from timbre_transfer import TimbreTransfer
 from utils import DEFAULT_SAMPLE_RATE
 from baseline import Baseline
 
@@ -202,21 +202,16 @@ def run_synthesize_dir(
     -------
     PipelineResult
     """
-    import gin as gin_module  # local import — avoids TF init at module level
-
     model_dir = str(model_dir)
     gin_file = str(gin_file)
     wav_files = collect_wav_files(input_dir)
     logger.info("DDSP pipeline: %d files in %s", len(wav_files), input_dir)
 
-    # --- Load model once with a 4-second reference ---
-    ref_audio = np.zeros((1, 64000), dtype=np.float32)
-    ref_features = compute_features(ref_audio)
-    model, _ = load_model(model_dir, gin_file, ref_audio, ref_features)
-
-    # Read the model's fixed chunk dimensions from gin
-    time_steps = int(gin_module.query_parameter("F0LoudnessPreprocessor.time_steps"))
-    n_samples = int(gin_module.query_parameter("Harmonic.n_samples"))
+    # --- Load model once ---
+    tt = TimbreTransfer(model_dir, gin_file)
+    tt.load()
+    time_steps = tt.time_steps
+    n_samples = tt.n_samples
 
     dataset_stats = load_dataset_stats(model_dir) if auto_adjust else None
 
@@ -247,42 +242,7 @@ def run_synthesize_dir(
             if loudness_shift != 0.0:
                 features = shift_loudness(features, loudness_shift)
 
-            # --- Chunk features and synthesise ---
-            total_frames = features["f0_hz"].shape[-1]
-            n_chunks = max(1, int(np.ceil(total_frames / time_steps)))
-
-            chunks_out: List[np.ndarray] = []
-            for c in range(n_chunks):
-                f_start = c * time_steps
-                f_end = min(f_start + time_steps, total_frames)
-                s_start = c * n_samples
-                s_end = min(s_start + n_samples, features["audio"].shape[-1])
-
-                chunk_feat: Dict[str, Any] = {}
-                for key in ("f0_hz", "f0_confidence", "loudness_db"):
-                    sl = features[key][..., f_start:f_end]
-                    pad_width = time_steps - sl.shape[-1]
-                    if pad_width > 0:
-                        pad_cfg = [(0, 0)] * (sl.ndim - 1) + [(0, pad_width)]
-                        sl = np.pad(sl, pad_cfg)
-                    chunk_feat[key] = sl
-
-                audio_sl = features["audio"][..., s_start:s_end]
-                pad_width = n_samples - audio_sl.shape[-1]
-                if pad_width > 0:
-                    pad_cfg = [(0, 0)] * (audio_sl.ndim - 1) + [(0, pad_width)]
-                    audio_sl = np.pad(audio_sl, pad_cfg)
-                chunk_feat["audio"] = audio_sl
-
-                audio_gen = resynthesize(model, chunk_feat)
-
-                actual_samples = s_end - s_start
-                if actual_samples < n_samples:
-                    audio_gen = audio_gen[:actual_samples]
-
-                chunks_out.append(audio_gen)
-
-            full_audio = np.concatenate(chunks_out)[:original_len]
+            full_audio = tt.synthesize(features)[:original_len]
 
             save_audio(out_path, full_audio, sr)
             processed += 1
