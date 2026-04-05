@@ -62,7 +62,7 @@ TRAIN_ENV = \
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------
-.PHONY: help setup lock docker docker-build prepare prepare-sample train eval sample upload-hf download-hf $(PRESETS)
+.PHONY: help setup lock docker docker-build prepare prepare-sample train eval sample upload-hf download-hf download-bach $(PRESETS)
 
 # Preset names are consumed as no-op targets so `make train ae` works
 $(PRESETS):
@@ -115,3 +115,8 @@ download-hf:
 		--repo "$(HF_REPO)" \
 		--path-in-repo "$(PATH_IN_REPO)" \
 		--model-dir "$(MODEL_DIR)"
+
+BACH_OUT_DIR ?= data/raw/bach-violin
+
+download-bach:
+	$(PYTHON) scripts/download_bach_violin.py --out-dir "$(BACH_OUT_DIR)"
