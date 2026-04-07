@@ -187,16 +187,27 @@ class TimbreMetrics:
         if not isinstance(spec, Spectrum):
             return {}
 
-        features: Dict[str, float] = {}
+        raw: Dict[str, Any] = {}
         try:
             if self.SPECTRAL in feature_types:
-                features.update(SpectralMetrics.from_spectrum(spec).get_features())
+                raw.update(SpectralMetrics.from_spectrum(spec).get_features())
             if self.LEVEL in feature_types:
-                features.update(LevelMetrics.from_spectrum(spec).get_features())
+                raw.update(LevelMetrics.from_spectrum(spec).get_features())
             if self.HARMONIC in feature_types:
-                features.update(HarmonicMetrics(spec).get_features())
+                raw.update(HarmonicMetrics(spec).get_features())
         except Exception:
             pass
+
+        # Ensure every value is a scalar; collapse arrays via their mean.
+        features: Dict[str, float] = {}
+        for k, v in raw.items():
+            arr = np.asarray(v)
+            if arr.ndim == 0:
+                features[k] = float(arr)
+            elif arr.size == 1:
+                features[k] = float(arr.flat[0])
+            else:
+                features[k] = float(np.nanmean(arr))
 
         return features
 

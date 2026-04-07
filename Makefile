@@ -43,8 +43,8 @@ TFRECORD_PATH   ?= data/tfrecords/solo_violin/*.tfrecord
 # ---------------------------------------------------------------------------
 # Training config
 # ---------------------------------------------------------------------------
-BATCH_SIZE      ?= 16
-GIN_MODEL       ?= models/solo_instrument.gin
+BATCH_SIZE      ?= 32
+GIN_MODEL       ?= models/solo_instrument_noreverb.gin
 GIN_DATASET     ?= datasets/tfrecord.gin
 GIN_EVAL        ?= eval/basic_f0_ld.gin
 GIN_SEARCH_PATH ?= configs/ddsp_gin
