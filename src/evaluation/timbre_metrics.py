@@ -246,7 +246,10 @@ class TimbreMetrics:
         aggregated: Dict[str, list[float]] = {}
         for spec in spectra:
             for k, v in self._extract_frame_features(spec, types).items():
-                aggregated.setdefault(k, []).append(float(v))
+                arr = np.asarray(v)
+                if arr.ndim != 0:
+                    continue
+                aggregated.setdefault(k, []).append(float(arr))
 
         if not aggregated:
             return {}
@@ -289,7 +292,12 @@ class TimbreMetrics:
         series: Dict[str, list[float]] = {}
         for spec in spectra:
             for k, v in self._extract_frame_features(spec, types).items():
-                series.setdefault(k, []).append(float(v))
+                # pytimbre may return arrays for some metrics (e.g. mean_center);
+                # skip non-scalar values to avoid crashing downstream code.
+                arr = np.asarray(v)
+                if arr.ndim != 0:
+                    continue
+                series.setdefault(k, []).append(float(arr))
 
         out: Dict[str, np.ndarray] = {}
         for key, values in series.items():

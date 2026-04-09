@@ -38,6 +38,10 @@ __all__ = [
     "plot_loss_heatmap",
     "plot_method_comparison",
     "plot_distribution_comparison",
+    "plot_coupling_scatter",
+    "plot_coupling_error_bars",
+    "plot_coefficient_distance_bars",
+    "plot_correlation_comparison",
 ]
 
 
@@ -590,5 +594,250 @@ def plot_distribution_comparison(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
         logger.info("Saved plot → %s", save_path)
+    if own_fig:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Pitch-timbre coupling visualizations
+# ---------------------------------------------------------------------------
+
+_METHOD_COLORS = {
+    "reference": "0.6",
+    "ddsp": "steelblue",
+    "baseline": "tomato",
+}
+
+
+def plot_coupling_scatter(
+    methods: Dict[str, Any],
+    descriptors: List[str],
+    save_path: Optional[str] = None,
+) -> None:
+    """Scatter + regression overlay for each descriptor (task §5.1).
+
+    Parameters
+    ----------
+    methods : dict
+        ``{method_name: {"f0": array, "features_2d": array,
+        "feat_keys": list, "models": coupling_model_dict}}``.
+        ``"reference"`` should be included as a method.
+    descriptors : list of str
+        Which descriptors to plot (subset of ``feat_keys``).
+    save_path : if given, save the figure to this path.
+    """
+    n_desc = len(descriptors)
+    ncols = min(4, n_desc)
+    nrows = int(np.ceil(n_desc / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows),
+                             squeeze=False)
+
+    for idx, desc in enumerate(descriptors):
+        ax = axes[idx // ncols, idx % ncols]
+
+        for method_name, mdata in methods.items():
+            f0 = mdata["f0"]
+            keys = mdata["feat_keys"]
+            if desc not in keys:
+                continue
+            col_i = keys.index(desc)
+            feats = mdata["features_2d"]
+            voiced = (f0 > 0) & np.isfinite(f0)
+            color = _METHOD_COLORS.get(method_name, "seagreen")
+
+            # Scatter (reference as light background, others as points)
+            alpha = 0.08 if method_name == "reference" else 0.25
+            s = 2 if method_name == "reference" else 6
+            ax.scatter(f0[voiced], feats[voiced, col_i], s=s, alpha=alpha,
+                       color=color, rasterized=True)
+
+            # Regression curve
+            if "models" in mdata and desc in mdata["models"]:
+                coeffs_b = mdata["models"][desc]["coeffs_b"]
+                f0_range = np.linspace(
+                    float(np.nanmin(f0[voiced])),
+                    float(np.nanmax(f0[voiced])),
+                    200,
+                )
+                y_hat = (coeffs_b[0]
+                         + coeffs_b[1] * f0_range
+                         + coeffs_b[2] * f0_range ** 2)
+                ax.plot(f0_range, y_hat, color=color, lw=2,
+                        label=method_name)
+
+        ax.set_xlabel("F0 (Hz)")
+        ax.set_ylabel(desc)
+        ax.set_title(desc)
+        ax.legend(fontsize=7, loc="best")
+
+    # Hide unused axes
+    for idx in range(n_desc, nrows * ncols):
+        axes[idx // ncols, idx % ncols].set_visible(False)
+
+    fig.suptitle("Pitch\u2013Descriptor Coupling", fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        logger.info("Saved plot \u2192 %s", save_path)
+    plt.close(fig)
+
+
+def plot_coupling_error_bars(
+    coupling_errors: Dict[str, Dict[str, float]],
+    descriptors: Optional[List[str]] = None,
+    ax: Optional[plt.Axes] = None,
+    save_path: Optional[str] = None,
+) -> None:
+    """Grouped bar chart of coupling error per descriptor and method (task §5.2).
+
+    Parameters
+    ----------
+    coupling_errors : dict
+        ``{method_name: {descriptor: CE_value}}``.
+    descriptors : list of str, optional
+        Subset / ordering of descriptors.  If ``None``, use all.
+    ax : optional matplotlib Axes.
+    save_path : if given, save the figure.
+    """
+    method_names = list(coupling_errors.keys())
+    if descriptors is None:
+        descriptors = sorted(
+            set().union(*(ce.keys() for ce in coupling_errors.values()))
+        )
+
+    n_methods = len(method_names)
+    n_desc = len(descriptors)
+    x = np.arange(n_desc)
+    width = 0.8 / max(n_methods, 1)
+
+    own_fig = ax is None
+    if own_fig:
+        fig, ax = plt.subplots(figsize=(max(8, n_desc * 1.2), 5))
+    else:
+        fig = ax.figure
+
+    for j, method in enumerate(method_names):
+        vals = [coupling_errors[method].get(d, 0.0) for d in descriptors]
+        color = _METHOD_COLORS.get(method, f"C{j}")
+        ax.bar(x + j * width - (n_methods - 1) * width / 2, vals, width,
+               label=method, color=color, edgecolor="black", linewidth=0.3)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(descriptors, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Coupling Error (MSE)")
+    ax.set_title("Coupling Error by Descriptor")
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        logger.info("Saved plot \u2192 %s", save_path)
+    if own_fig:
+        plt.close(fig)
+
+
+def plot_coefficient_distance_bars(
+    coeff_distances: Dict[str, Dict[str, float]],
+    descriptors: Optional[List[str]] = None,
+    ax: Optional[plt.Axes] = None,
+    save_path: Optional[str] = None,
+) -> None:
+    """Grouped bar chart of coefficient distance per descriptor and method (task §5.3).
+
+    Parameters
+    ----------
+    coeff_distances : dict
+        ``{method_name: {descriptor: distance}}``.
+    descriptors : list of str, optional
+    ax : optional matplotlib Axes.
+    save_path : if given, save the figure.
+    """
+    method_names = list(coeff_distances.keys())
+    if descriptors is None:
+        descriptors = sorted(
+            set().union(*(cd.keys() for cd in coeff_distances.values()))
+        )
+
+    n_methods = len(method_names)
+    n_desc = len(descriptors)
+    x = np.arange(n_desc)
+    width = 0.8 / max(n_methods, 1)
+
+    own_fig = ax is None
+    if own_fig:
+        fig, ax = plt.subplots(figsize=(max(8, n_desc * 1.2), 5))
+    else:
+        fig = ax.figure
+
+    for j, method in enumerate(method_names):
+        vals = [coeff_distances[method].get(d, 0.0) for d in descriptors]
+        color = _METHOD_COLORS.get(method, f"C{j}")
+        ax.bar(x + j * width - (n_methods - 1) * width / 2, vals, width,
+               label=method, color=color, edgecolor="black", linewidth=0.3)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(descriptors, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Coefficient Distance (L2)")
+    ax.set_title("Coefficient Distance to Reference")
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        logger.info("Saved plot \u2192 %s", save_path)
+    if own_fig:
+        plt.close(fig)
+
+
+def plot_correlation_comparison(
+    correlations: Dict[str, Dict[str, float]],
+    descriptors: Optional[List[str]] = None,
+    ax: Optional[plt.Axes] = None,
+    save_path: Optional[str] = None,
+) -> None:
+    """Grouped bar chart of Pearson r(descriptor, F0) per method (task §5.4).
+
+    Parameters
+    ----------
+    correlations : dict
+        ``{method_name: {descriptor: pearson_r}}``.
+    descriptors : list of str, optional
+    ax : optional matplotlib Axes.
+    save_path : if given, save the figure.
+    """
+    method_names = list(correlations.keys())
+    if descriptors is None:
+        descriptors = sorted(
+            set().union(*(c.keys() for c in correlations.values()))
+        )
+
+    n_methods = len(method_names)
+    n_desc = len(descriptors)
+    x = np.arange(n_desc)
+    width = 0.8 / max(n_methods, 1)
+
+    own_fig = ax is None
+    if own_fig:
+        fig, ax = plt.subplots(figsize=(max(8, n_desc * 1.2), 5))
+    else:
+        fig = ax.figure
+
+    for j, method in enumerate(method_names):
+        vals = [correlations[method].get(d, 0.0) for d in descriptors]
+        color = _METHOD_COLORS.get(method, f"C{j}")
+        ax.bar(x + j * width - (n_methods - 1) * width / 2, vals, width,
+               label=method, color=color, edgecolor="black", linewidth=0.3)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(descriptors, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Pearson r")
+    ax.set_title("Descriptor\u2013F0 Correlation by Method")
+    ax.axhline(0, color="black", lw=0.5, ls="--")
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        logger.info("Saved plot \u2192 %s", save_path)
     if own_fig:
         plt.close(fig)
