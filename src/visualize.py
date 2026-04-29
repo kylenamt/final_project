@@ -52,26 +52,63 @@ def plot_spectrograms(
     vmax: float = 1,
     size: int = 512 + 256,
     titles: Optional[List[str]] = None,
+    combined: bool = False,
 ) -> None:
-    """Plot STFT log-magnitude spectrograms for a list of audio arrays."""
+    """Plot STFT log-magnitude spectrograms for a list of audio arrays.
+    
+    Args:
+        combined: If True, render all spectrograms in one figure. If False, show each separately.
+    """
     if not isinstance(audios, list) or len(audios) == 0:
         raise ValueError("audios must be a list with one or more audio arrays")
 
-    for i, audio in enumerate(audios):
-        if len(audio.shape) == 2:
-            audio = audio[0]
-        _, _, Sxx = scipy_signal.stft(audio, fs=sr, nperseg=size,
-                                      noverlap=size * 3 // 4)
-        logmag = np.log10(np.abs(Sxx) + 1e-7)
-        logmag = np.flipud(logmag)
-        plt.matshow(logmag, vmin=vmin, vmax=vmax, cmap=plt.cm.magma, aspect='auto')  # type: ignore
-        plt.xticks([])
-        plt.yticks([])
-        plt.xlabel('Time')
-        plt.ylabel('Frequency')
-        title = titles[i] if titles and i < len(titles) else f'Audio {i+1}'
-        plt.title(title)
+    if combined:
+        ncols = int(np.ceil(len(audios) / 2))
+        nrows = min(2, len(audios))
+        # Match the apparent size of separate figures when merged into one grid.
+        fig, axes = plt.subplots(
+            nrows=nrows,
+            ncols=ncols,
+            figsize=(6.4 * ncols, 4.8 * nrows),
+        )
+        if len(audios) == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten()
+        
+        for i, audio in enumerate(audios):
+            if len(audio.shape) == 2:
+                audio = audio[0]
+            _, _, Sxx = scipy_signal.stft(audio, fs=sr, nperseg=size,
+                                          noverlap=size * 3 // 4)
+            logmag = np.log10(np.abs(Sxx) + 1e-7)
+            logmag = np.flipud(logmag)
+            im = axes[i].matshow(logmag, vmin=vmin, vmax=vmax, cmap=plt.cm.magma, aspect='auto')  # type: ignore
+            axes[i].set_xticks([])
+            axes[i].set_yticks([])
+            axes[i].set_xlabel('Time')
+            axes[i].set_ylabel('Frequency')
+            title = titles[i] if titles and i < len(titles) else f'Audio {i+1}'
+            axes[i].set_title(title)
+        
+        plt.tight_layout()
         plt.show()
+    else:
+        for i, audio in enumerate(audios):
+            if len(audio.shape) == 2:
+                audio = audio[0]
+            _, _, Sxx = scipy_signal.stft(audio, fs=sr, nperseg=size,
+                                          noverlap=size * 3 // 4)
+            logmag = np.log10(np.abs(Sxx) + 1e-7)
+            logmag = np.flipud(logmag)
+            plt.matshow(logmag, vmin=vmin, vmax=vmax, cmap=plt.cm.magma, aspect='auto')  # type: ignore
+            plt.xticks([])
+            plt.yticks([])
+            plt.xlabel('Time')
+            plt.ylabel('Frequency')
+            title = titles[i] if titles and i < len(titles) else f'Audio {i+1}'
+            plt.title(title)
+            plt.show()
 
 
 def plot_features(audio_features: Dict[str, Any], trim: int = -15) -> None:
@@ -410,7 +447,7 @@ def plot_feature_radar(
 
     Parameters
     ----------
-    df : DataFrame from ``run_evaluation_dir`` with ``*_orig`` and ``*_trans`` columns.
+    df : DataFrame from ``evaluate_dir`` with ``*_orig`` and ``*_trans`` columns.
     group : if given, filter to rows where any metadata column matches this value.
     save_path : if given, save the figure to this path.
     """
@@ -512,7 +549,7 @@ def plot_method_comparison(
 
     Parameters
     ----------
-    df_a, df_b : DataFrames from ``run_evaluation_dir`` for each method.
+    df_a, df_b : DataFrames from ``evaluate_dir`` for each method.
     metric : loss column name.
     group_col : column to group by.
     label_a, label_b : legend labels for each method.
@@ -651,17 +688,23 @@ def plot_coupling_scatter(
             ax.scatter(f0[voiced], feats[voiced, col_i], s=s, alpha=alpha,
                        color=color, rasterized=True)
 
-            # Regression curve
+            # Regression curve marginalised over dynamics at 0:
+            #   ŷ(p) = β₀ + β₁·p, where p is the first non-intercept
+            #   regressor stored on the model.
             if "models" in mdata and desc in mdata["models"]:
-                coeffs_b = mdata["models"][desc]["coeffs_b"]
+                model = mdata["models"][desc]
+                coeffs = model["coeffs"]
+                transform = model.get("pitch_transform", "log2")
                 f0_range = np.linspace(
                     float(np.nanmin(f0[voiced])),
                     float(np.nanmax(f0[voiced])),
                     200,
                 )
-                y_hat = (coeffs_b[0]
-                         + coeffs_b[1] * f0_range
-                         + coeffs_b[2] * f0_range ** 2)
+                if transform == "log2":
+                    p_range = np.log2(f0_range)
+                else:
+                    p_range = f0_range
+                y_hat = coeffs[0] + coeffs[1] * p_range
                 ax.plot(f0_range, y_hat, color=color, lw=2,
                         label=method_name)
 
@@ -794,16 +837,18 @@ def plot_correlation_comparison(
     descriptors: Optional[List[str]] = None,
     ax: Optional[plt.Axes] = None,
     save_path: Optional[str] = None,
+    metric_name: str = "Pearson r",
 ) -> None:
-    """Grouped bar chart of Pearson r(descriptor, F0) per method (task §5.4).
+    """Grouped bar chart of correlation(descriptor, F0) per method (task §5.4).
 
     Parameters
     ----------
     correlations : dict
-        ``{method_name: {descriptor: pearson_r}}``.
+        ``{method_name: {descriptor: r}}``.
     descriptors : list of str, optional
     ax : optional matplotlib Axes.
     save_path : if given, save the figure.
+    metric_name : y-axis label (e.g. ``"Pearson r"`` or ``"Spearman r"``).
     """
     method_names = list(correlations.keys())
     if descriptors is None:
@@ -830,8 +875,8 @@ def plot_correlation_comparison(
 
     ax.set_xticks(x)
     ax.set_xticklabels(descriptors, rotation=45, ha="right", fontsize=8)
-    ax.set_ylabel("Pearson r")
-    ax.set_title("Descriptor\u2013F0 Correlation by Method")
+    ax.set_ylabel(metric_name)
+    ax.set_title(f"Descriptor\u2013F0 Correlation by Method ({metric_name})")
     ax.axhline(0, color="black", lw=0.5, ls="--")
     ax.legend(fontsize=8)
     plt.tight_layout()

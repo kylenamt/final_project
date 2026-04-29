@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ensure TensorFlow can find CUDA/cuDNN libs from the conda environment
+# Ensure CUDA libs from the conda env are visible to TensorFlow
 if [[ -n "${CONDA_PREFIX:-}" ]]; then
   export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-# Prevent TF from grabbing all GPU memory upfront.
-# Lets the allocator grow as needed, avoiding fragmentation-induced segfaults.
-export TF_FORCE_GPU_ALLOW_GROWTH=true
+# Disable XLA JIT — TF 2.11 XLA segfaults on RTX 3080 + driver 575
+export TF_XLA_FLAGS="${TF_XLA_FLAGS:---tf_xla_auto_jit=0}"
 
 MODE="${MODE:-train}"
 TFRECORD_PATH="${TFRECORD_PATH:-data/ddsp_data/vocalset.tfrecord}"
@@ -61,14 +60,12 @@ else
   exit 1
 fi
 
-# Add gin search path and project root to PYTHONPATH so gin can resolve
-# custom modules (e.g. src.safe_trainer).
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-_EXTRA_PATHS="${GIN_SEARCH_PATH}:${PROJECT_ROOT}"
-if [[ -n "${PYTHONPATH:-}" ]]; then
-  export PYTHONPATH="${_EXTRA_PATHS}:${PYTHONPATH}"
-else
-  export PYTHONPATH="${_EXTRA_PATHS}"
+if [[ -n "${GIN_SEARCH_PATH}" ]]; then
+  if [[ -n "${PYTHONPATH:-}" ]]; then
+    export PYTHONPATH="${GIN_SEARCH_PATH}:${PYTHONPATH}"
+  else
+    export PYTHONPATH="${GIN_SEARCH_PATH}"
+  fi
 fi
 
 GIN_PARAM_FLAGS=("--gin_param=TFRecordProvider.file_pattern='${TFRECORD_PATH}*'" "--gin_param=batch_size=${BATCH_SIZE}")

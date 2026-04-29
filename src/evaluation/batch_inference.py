@@ -1,11 +1,11 @@
-"""Experiment pipeline: batch DDSP inference, WORLD vocoder baseline, and evaluation.
+"""Batch inference: DDSP timbre transfer, WORLD vocoder baseline, and evaluation.
 
 Provides three main functions:
-- ``run_synthesize_dir``  – DDSP timbre transfer over a directory of WAV files.
-- ``run_vocoder_dir``     – WORLD vocoder baseline over the same directory using
-                            a randomly-sampled "source bank" of solo instrument audio.
-- ``run_evaluation_dir``  – Per-file timbre loss computation between original and
-                            transferred audio folders.
+- ``synthesize_dir``  – DDSP timbre transfer over a directory of WAV files.
+- ``vocode_dir``      – WORLD vocoder baseline over the same directory using
+                        a randomly-sampled "source bank" of solo instrument audio.
+- ``evaluate_dir``    – Distributional and pairwise timbre loss computation
+                        from pre-computed feature parquet files.
 
 Resume behaviour
 ----------------
@@ -18,6 +18,7 @@ on the next run — no separate checkpoint file is needed.
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -28,7 +29,6 @@ import pandas as pd
 
 from data_preprocessing import trim_silence
 from .loss import Loss
-from .timbre_metrics import TimbreMetrics
 from utils import load_audio, save_audio
 from feature_utils import (
     auto_adjust_features,
@@ -39,7 +39,7 @@ from feature_utils import (
 )
 from timbre_transfer import TimbreTransfer
 from utils import DEFAULT_SAMPLE_RATE
-from baseline import Baseline
+from baseline import Baseline, BaselineSMS
 
 try:
     from tqdm.auto import tqdm
@@ -54,9 +54,11 @@ __all__ = [
     "make_output_path",
     "build_source_bank",
     "select_source_segment",
-    "run_synthesize_dir",
-    "run_vocoder_dir",
-    "run_evaluation_dir",
+    "synthesize_dir",
+    "vocode_dir",
+    "vocode_dir_sms",
+    "load_features",
+    "evaluate_dir",
 ]
 
 
@@ -65,7 +67,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 class PipelineResult(TypedDict):
-    """Return type for ``run_synthesize_dir`` and ``run_vocoder_dir``."""
+    """Return type for ``synthesize_dir`` and ``vocode_dir``."""
     processed: int
     failed: int
     skipped: int
@@ -164,7 +166,7 @@ def select_source_segment(
 # ---------------------------------------------------------------------------
 
 
-def run_synthesize_dir(
+def synthesize_dir(
     model_dir: str | Path,
     gin_file: str | Path,
     input_dir: str | Path,
@@ -271,12 +273,19 @@ def _process_one_baseline(
     sr: int,
     method: str,
     file_seed: int,
+    use_crepe: bool = False,
+    precomputed_f0: Optional[np.ndarray] = None,
 ) -> Optional[str]:
     """Process a single file for the WORLD vocoder baseline.
 
     Returns ``None`` on success, or the failing file path as a string on error.
     This is a module-level function so it can be pickled by
     :class:`~concurrent.futures.ProcessPoolExecutor`.
+
+    If *precomputed_f0* is provided the worker skips the CREPE call and
+    passes the F0 array straight into the WORLD synthesis step — used when
+    the main process pre-runs CREPE on the GPU so that workers stay
+    CPU-only and can be parallelised safely.
     """
     try:
         bl = Baseline(sample_rate=sr)
@@ -294,7 +303,12 @@ def _process_one_baseline(
             target_audio, source_audio
         )
 
-        result = transfer_fn(target_audio, source_audio)
+        result = transfer_fn(
+            target_audio,
+            source_audio,
+            use_crepe=use_crepe and precomputed_f0 is None,
+            target_f0=precomputed_f0,
+        )
 
         save_audio(out_path, result.astype(np.float32), sr)
         return None
@@ -303,15 +317,39 @@ def _process_one_baseline(
         return str(wav_path)
 
 
-def run_vocoder_dir(
+def _precompute_crepe_f0(
+    wav_paths: List[Path],
+    sr: int,
+) -> Dict[str, np.ndarray]:
+    """Run CREPE sequentially on every target file and return its F0 contour.
+
+    Runs in the main process so there is exactly one TensorFlow / GPU
+    context.  The resulting dict is keyed by ``str(wav_path)`` so workers
+    can look up their file's F0 array without re-entering CREPE.
+    """
+    bl = Baseline(sample_rate=sr)
+    out: Dict[str, np.ndarray] = {}
+    items = tqdm(wav_paths, desc="CREPE F0 precompute") if tqdm else wav_paths
+    for wav_path in items:
+        try:
+            audio, _ = load_audio(wav_path, sr=sr, mono=True)
+            f0 = bl.crepe_f0(audio.astype(np.float64))[0]
+            out[str(wav_path)] = np.asarray(f0, dtype=np.float64)
+        except Exception:
+            logger.warning("CREPE precompute failed: %s", wav_path, exc_info=True)
+    return out
+
+
+def vocode_dir(
     input_dir: str | Path,
     output_dir: str | Path,
     source_dir: str | Path,
     sr: int = DEFAULT_SAMPLE_RATE,
-    method: str = "f0",
+    method: str = "f0_ap",
     silence_threshold_db: float = -40.0,
     seed: int = 42,
     n_workers: int = 1,
+    use_crepe: bool = False,
 ) -> PipelineResult:
     """Run WORLD vocoder baseline on every WAV file under *input_dir*.
 
@@ -337,6 +375,9 @@ def run_vocoder_dir(
     n_workers : number of parallel workers.  ``1`` (default) runs sequentially.
         Set to ``os.cpu_count()`` or a specific integer to parallelise via
         :class:`~concurrent.futures.ProcessPoolExecutor`.
+    use_crepe : if ``True``, estimate the target F0 contour with CREPE instead
+        of WORLD's built-in Harvest/Stonemask estimator.  Passed through to
+        :meth:`Baseline.f0_transfer` / :meth:`Baseline.f0_and_ap_transfer`.
 
     Returns
     -------
@@ -359,11 +400,25 @@ def run_vocoder_dir(
             "wav_path": wav_path,
             "out_path": out_path,
             "file_seed": seed + file_idx,
+            "precomputed_f0": None,
         })
 
+    # --- Phase 1: precompute CREPE F0 on the main process (GPU) ------------
+    # Parallel CREPE workers would each load their own TF graph and fight
+    # over GPU memory.  Running it once here and handing the F0 contours
+    # off to CPU workers keeps phase 2 safely parallelisable.
+    if use_crepe and work:
+        logger.info(
+            "Precomputing CREPE F0 for %d files (sequential, main process)",
+            len(work),
+        )
+        crepe_f0 = _precompute_crepe_f0([item["wav_path"] for item in work], sr)
+        for item in work:
+            item["precomputed_f0"] = crepe_f0.get(str(item["wav_path"]))
+
     logger.info(
-        "Baseline: %d to process, %d skipped, %d workers",
-        len(work), skipped, n_workers,
+        "Baseline: %d to process, %d skipped, %d workers, use_crepe=%s",
+        len(work), skipped, n_workers, use_crepe,
     )
 
     processed, failed = 0, 0
@@ -376,6 +431,7 @@ def run_vocoder_dir(
             err = _process_one_baseline(
                 item["wav_path"], item["out_path"],
                 source_bank, sr, method, item["file_seed"],
+                use_crepe, item["precomputed_f0"],
             )
             if err is None:
                 processed += 1
@@ -384,12 +440,18 @@ def run_vocoder_dir(
                 failed_files.append(err)
     else:
         # ---- Parallel path ------------------------------------------------
-        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        # When use_crepe=True the main process has already initialised
+        # TensorFlow / CUDA.  Forking workers from that state is unsafe
+        # (can hang or corrupt the CUDA context), so force "spawn" which
+        # starts each worker from a clean Python.
+        pool_ctx = mp.get_context("spawn") if use_crepe else None
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=pool_ctx) as pool:
             futures = {
                 pool.submit(
                     _process_one_baseline,
                     item["wav_path"], item["out_path"],
                     source_bank, sr, method, item["file_seed"],
+                    use_crepe, item["precomputed_f0"],
                 ): item["wav_path"]
                 for item in work
             }
@@ -413,93 +475,260 @@ def run_vocoder_dir(
 
 
 # ---------------------------------------------------------------------------
-# Evaluation pipeline — reference-based comparison
+# SMS/HPS baseline pipeline
 # ---------------------------------------------------------------------------
 
 
-def _evaluate_one_file_against_reference(
-    file_path: Path,
-    ref_2d: np.ndarray,
-    feat_keys: List[str],
-    rel_path: str,
+def _process_one_sms(
+    wav_path: Path,
+    out_path: Path,
+    source_bank: List[np.ndarray],
     sr: int,
-) -> Optional[Dict[str, Any]]:
-    """Compare one synthesised file's feature distribution to the reference.
+    method: str,
+    file_seed: int,
+    alpha: float,
+    sms_kwargs: Dict[str, Any],
+    use_crepe: bool = False,
+    precomputed_f0: Optional[np.ndarray] = None,
+) -> Optional[str]:
+    """Process a single file for the SMS/HPS baseline.
 
-    Returns a dict row on success, or ``None`` on error.
-    Module-level function for :class:`~concurrent.futures.ProcessPoolExecutor`.
+    Returns ``None`` on success, or the failing file path as a string on error.
+    This is a module-level function so it can be pickled by
+    :class:`~concurrent.futures.ProcessPoolExecutor`.
+
+    If *precomputed_f0* is provided (raw CREPE contour at ~5 ms hop), the
+    worker resamples it to the HPS frame rate before passing it into
+    the transfer method.
     """
     try:
-        tm = TimbreMetrics(sample_rate=sr)
-        loss = Loss()
+        bl = BaselineSMS(sample_rate=sr, **sms_kwargs)
+        transfer_fn = bl.f0_transfer if method == "f0" else bl.f0_and_ap_transfer
 
-        series = tm.extract_series_from_file(file_path)
-        if not series:
-            logger.warning("Empty features: %s", rel_path)
-            return None
+        file_rng = np.random.default_rng(file_seed)
 
-        available = sorted(set(series.keys()) & set(feat_keys))
-        if not available:
-            logger.warning("No matching features: %s", rel_path)
-            return None
+        target_audio, _ = load_audio(wav_path, sr=sr, mono=True)
+        target_audio = target_audio.astype(np.float64)
 
-        # Build column indices that match feat_keys ordering
-        col_idx = [feat_keys.index(k) for k in available]
-        file_2d = np.column_stack([series[k] for k in available])
-        ref_subset = ref_2d[:, col_idx]
+        source_audio = select_source_segment(
+            source_bank, len(target_audio), file_rng
+        )
+        target_audio, source_audio = BaselineSMS.match_length(
+            target_audio, source_audio
+        )
 
-        distances = loss.evaluate(file_2d, ref_subset)
+        # Resample precomputed CREPE F0 to approximate HPS frame count
+        f0_override = None
+        if precomputed_f0 is not None:
+            n_hps_est = len(target_audio) // bl._H + 1
+            idx = np.round(
+                np.linspace(0, len(precomputed_f0) - 1, n_hps_est)
+            ).astype(int)
+            f0_override = precomputed_f0[idx].astype(np.float64)
 
-        return {"file": rel_path, **distances}
+        result = transfer_fn(
+            target_audio,
+            source_audio,
+            alpha=alpha,
+            use_crepe=use_crepe and precomputed_f0 is None,
+            target_f0=f0_override,
+        )
 
-    except Exception:
-        logger.warning("Pairwise evaluation failed: %s", rel_path, exc_info=True)
+        save_audio(out_path, result.astype(np.float32), sr)
         return None
+    except Exception:
+        logger.warning("Failed: %s", wav_path, exc_info=True)
+        return str(wav_path)
 
 
-def run_evaluation_dir(
-    reference_dir: str | Path,
-    synthesized_dirs: Dict[str, str | Path],
-    output_csv: str | Path,
+def vocode_dir_sms(
+    input_dir: str | Path,
+    output_dir: str | Path,
+    source_dir: str | Path,
     sr: int = DEFAULT_SAMPLE_RATE,
+    method: str = "f0_ap",
+    alpha: float = 1.0,
+    silence_threshold_db: float = -40.0,
+    seed: int = 42,
     n_workers: int = 1,
-    max_frames: int = 10000,
-) -> Dict[str, pd.DataFrame]:
-    """Compare synthesised audio folders against a reference set.
+    use_crepe: bool = False,
+    **sms_kwargs,
+) -> PipelineResult:
+    """Run SMS/HPS baseline on every WAV file under *input_dir*.
 
-    Uses the solo instrument recordings in *reference_dir* as the ground-truth
-    timbre distribution.  For each method folder in *synthesized_dirs*, two
-    comparison strategies are applied:
+    Same interface as :func:`vocode_dir` but uses :class:`BaselineSMS`
+    (Harmonic Plus Stochastic model from ``sms-tools``) instead of the
+    WORLD-based :class:`Baseline`.
 
-    **Strategy 1 — distribution-level**: concatenate all per-frame features
-    from the folder into one array and compare against the concatenated
-    reference.  Produces one row per method.
-
-    **Strategy 2 — pairwise**: compare each individual file's feature
-    distribution against the full reference.  Produces one row per file.
-
-    Both strategies use :meth:`~evaluation.loss.Loss.evaluate` (MMD +
-    Wasserstein).
-
-    Resume behaviour
-    ----------------
-    Pairwise results are appended to ``{output_csv}_pairwise.csv``.  Files
-    already present (keyed by ``(method, file)``) are skipped on re-run.
+    Files whose output already exists and is valid are skipped automatically,
+    so re-running the function resumes from where it left off.
 
     Parameters
     ----------
-    reference_dir : directory of reference instrument WAV files (e.g. solo
-        violin).
-    synthesized_dirs : mapping of method name to directory, e.g.
-        ``{"ddsp": "path/to/ddsp", "baseline": "path/to/baseline"}``.
-    output_csv : base path for output CSVs.  Two files are written:
-        ``{stem}_distribution.csv`` and ``{stem}_pairwise.csv``.
+    input_dir  : root directory of target WAV files (searched recursively).
+    output_dir : root directory for output; subdirectory structure is preserved.
+    source_dir : directory of source instrument WAV files (e.g. solo violin).
     sr : sample rate.
-    n_workers : number of parallel workers for feature extraction and
-        pairwise evaluation.
-    max_frames : maximum frames to use for Strategy 1 distribution
-        comparison (sub-sampled for computational efficiency, since MMD is
-        O(n^2)).
+    method : ``"f0"`` for F0 transfer, ``"f0_ap"`` for F0 + AP transfer.
+    alpha : blend strength 0 (no transfer) → 1 (full transfer).
+    silence_threshold_db : threshold for silence trimming in source audio.
+    seed : base random seed; file at index *i* uses ``seed + i``.
+    n_workers : number of parallel workers.  ``1`` (default) runs sequentially.
+    use_crepe : if ``True``, estimate F0 with CREPE (main process) and
+        distribute precomputed contours to workers.
+    **sms_kwargs : forwarded to :class:`BaselineSMS`
+        (e.g. ``window``, ``M``, ``N``, ``H``, ``Ns``, ``stocf``, ``t``, …).
+
+    Returns
+    -------
+    PipelineResult
+    """
+    wav_files = collect_wav_files(input_dir)
+    logger.info("SMS pipeline: %d files in %s", len(wav_files), input_dir)
+
+    source_bank = build_source_bank(source_dir, sr, silence_threshold_db)
+
+    # --- Build work items, skipping already-completed files ----------------
+    work: List[Dict[str, Any]] = []
+    skipped = 0
+    for file_idx, wav_path in enumerate(wav_files):
+        out_path = make_output_path(wav_path, input_dir, output_dir, suffix="_SMS")
+        if _is_valid_output(out_path):
+            skipped += 1
+            continue
+        work.append({
+            "wav_path": wav_path,
+            "out_path": out_path,
+            "file_seed": seed + file_idx,
+            "precomputed_f0": None,
+        })
+
+    # --- Phase 1: precompute CREPE F0 on the main process (GPU) -----------
+    if use_crepe and work:
+        logger.info(
+            "Precomputing CREPE F0 for %d files (sequential, main process)",
+            len(work),
+        )
+        crepe_f0 = _precompute_crepe_f0([item["wav_path"] for item in work], sr)
+        for item in work:
+            item["precomputed_f0"] = crepe_f0.get(str(item["wav_path"]))
+
+    logger.info(
+        "SMS: %d to process, %d skipped, %d workers, use_crepe=%s",
+        len(work), skipped, n_workers, use_crepe,
+    )
+
+    processed, failed = 0, 0
+    failed_files: List[str] = []
+
+    if n_workers <= 1:
+        # ---- Sequential path (default) -----------------------------------
+        items = tqdm(work, desc="SMS inference") if tqdm else work
+        for item in items:
+            err = _process_one_sms(
+                item["wav_path"], item["out_path"],
+                source_bank, sr, method, item["file_seed"],
+                alpha, sms_kwargs, use_crepe, item["precomputed_f0"],
+            )
+            if err is None:
+                processed += 1
+            else:
+                failed += 1
+                failed_files.append(err)
+    else:
+        # ---- Parallel path ------------------------------------------------
+        pool_ctx = mp.get_context("spawn") if use_crepe else None
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=pool_ctx) as pool:
+            futures = {
+                pool.submit(
+                    _process_one_sms,
+                    item["wav_path"], item["out_path"],
+                    source_bank, sr, method, item["file_seed"],
+                    alpha, sms_kwargs, use_crepe, item["precomputed_f0"],
+                ): item["wav_path"]
+                for item in work
+            }
+            items = (
+                tqdm(as_completed(futures), desc="SMS inference", total=len(futures))
+                if tqdm else as_completed(futures)
+            )
+            for future in items:
+                err = future.result()
+                if err is None:
+                    processed += 1
+                else:
+                    failed += 1
+                    failed_files.append(err)
+
+    logger.info(
+        "SMS done: %d processed, %d skipped, %d failed",
+        processed, skipped, failed,
+    )
+    return {"processed": processed, "failed": failed, "skipped": skipped, "failed_files": failed_files}
+
+
+# ---------------------------------------------------------------------------
+# Feature loading
+# ---------------------------------------------------------------------------
+
+
+def load_features(path: str | Path) -> pd.DataFrame:
+    """Load pre-computed features from a parquet file.
+
+    The parquet is expected to contain a ``filename`` column (identifying the
+    source audio file for each frame) plus one or more numeric feature columns
+    (e.g. ``spectral_centroid``, ``spectral_spread``, …).
+
+    These files are produced by the *feature_extraction* notebook.
+    """
+    return pd.read_parquet(Path(path))
+
+
+# ---------------------------------------------------------------------------
+# Evaluation pipeline — pre-computed features
+# ---------------------------------------------------------------------------
+
+
+def evaluate_dir(
+    ref_features: pd.DataFrame | str | Path,
+    synth_features: Dict[str, pd.DataFrame | str | Path],
+    output_csv: str | Path,
+    feature_cols: Optional[List[str]] = None,
+    max_frames: int = 10_000,
+) -> Dict[str, pd.DataFrame]:
+    """Compare pre-computed feature distributions against a reference.
+
+    Accepts DataFrames (or paths to parquet files) produced by the
+    *feature_extraction* notebook.  No audio loading or feature extraction
+    is performed here.
+
+    Two comparison strategies are applied for each method:
+
+    **Strategy 1 — distribution-level**: compare the full concatenated
+    feature matrix of each method against the reference.  One row per method.
+
+    **Strategy 2 — pairwise**: compare each individual file's frames against
+    the full reference distribution.  One row per file.
+
+    Both strategies use :class:`~evaluation.loss.Loss` (MMD + Wasserstein).
+
+    Parameters
+    ----------
+    ref_features : DataFrame or path to parquet
+        Reference feature set.  Must have a ``filename`` column and numeric
+        feature columns.
+    synth_features : dict
+        ``{method_name: DataFrame_or_path}`` for each synthesis method.
+    output_csv : path
+        Base path for output CSVs.  Two files are written:
+        ``{stem}_distribution.csv`` and ``{stem}_pairwise.csv``.
+    feature_cols : list of str, optional
+        Feature columns to compare.  If *None*, all numeric columns
+        (excluding ``filename``) present in **both** the reference and
+        the first synth DataFrame are used.
+    max_frames : int
+        Cap for distribution-level comparison (sub-sampled because MMD is
+        O(n²)).
 
     Returns
     -------
@@ -511,47 +740,58 @@ def run_evaluation_dir(
     pair_csv = output_csv.parent / f"{output_csv.stem}_pairwise.csv"
 
     # ------------------------------------------------------------------
-    # 1. Build reference feature set
+    # 1. Load DataFrames if paths were given
     # ------------------------------------------------------------------
-    logger.info("Building reference feature set from %s", reference_dir)
-    tm = TimbreMetrics(sample_rate=sr)
-    ref_features = tm.extract_from_dir(reference_dir, n_workers=n_workers)
-    feat_keys = sorted(ref_features.keys())
-    ref_2d = np.column_stack([ref_features[k] for k in feat_keys])
+    if not isinstance(ref_features, pd.DataFrame):
+        ref_features = load_features(ref_features)
 
-    logger.info(
-        "Reference: %d frames, %d features", ref_2d.shape[0], ref_2d.shape[1],
-    )
+    loaded_synth: Dict[str, pd.DataFrame] = {}
+    for name, data in synth_features.items():
+        if isinstance(data, pd.DataFrame):
+            loaded_synth[name] = data
+        else:
+            loaded_synth[name] = load_features(data)
 
     # ------------------------------------------------------------------
-    # 2. Resume: load existing pairwise results
+    # 2. Determine feature columns
     # ------------------------------------------------------------------
-    done_pairs: set[tuple[str, str]] = set()
-    existing_pair_rows: List[Dict[str, Any]] = []
-    if pair_csv.exists():
-        df_existing = pd.read_csv(pair_csv)
-        done_pairs = set(
-            zip(df_existing["method"].tolist(), df_existing["file"].tolist())
+    meta_cols = {"filename"}
+    if feature_cols is None:
+        feature_cols = sorted(
+            c for c in ref_features.columns
+            if c not in meta_cols
+            and ref_features[c].dtype.kind in ("f", "i")
         )
-        existing_pair_rows = df_existing.to_dict("records")
-        logger.info("Resuming pairwise: %d rows in %s", len(done_pairs), pair_csv)
 
-    dist_rows: List[Dict[str, Any]] = []
-    new_pair_rows: List[Dict[str, Any]] = []
+    logger.info("Evaluating %d features: %s", len(feature_cols), feature_cols)
+
+    ref_2d = ref_features[feature_cols].to_numpy(dtype=np.float64)
+
     rng = np.random.default_rng(42)
     loss = Loss()
 
-    for method_name, synth_dir in synthesized_dirs.items():
-        logger.info("Evaluating method '%s' from %s", method_name, synth_dir)
+    dist_rows: List[Dict[str, Any]] = []
+    pair_rows: List[Dict[str, Any]] = []
+
+    for method_name, synth_df in loaded_synth.items():
+        logger.info("Evaluating method '%s'", method_name)
+
+        # Only use features present in both ref and synth
+        available = sorted(set(feature_cols) & set(synth_df.columns))
+        if not available:
+            logger.warning(
+                "No common features for method '%s', skipping", method_name,
+            )
+            continue
+
+        col_idx = [feature_cols.index(c) for c in available]
+        synth_2d = synth_df[available].to_numpy(dtype=np.float64)
+        ref_subset = ref_2d[:, col_idx]
 
         # --------------------------------------------------------------
         # Strategy 1 — distribution-level comparison
         # --------------------------------------------------------------
-        synth_features = tm.extract_from_dir(synth_dir, n_workers=n_workers)
-        synth_2d = np.column_stack([synth_features[k] for k in feat_keys])
-
-        # Sub-sample for computational efficiency
-        ref_sub = ref_2d
+        ref_sub = ref_subset
         synth_sub = synth_2d
         if ref_sub.shape[0] > max_frames:
             idx = rng.choice(ref_sub.shape[0], max_frames, replace=False)
@@ -561,9 +801,14 @@ def run_evaluation_dir(
             synth_sub = synth_sub[idx]
 
         dist_result = loss.evaluate(synth_sub, ref_sub)
+        n_files = (
+            synth_df["filename"].nunique()
+            if "filename" in synth_df.columns
+            else 0
+        )
         dist_rows.append({
             "method": method_name,
-            "n_files": len(collect_wav_files(synth_dir)),
+            "n_files": n_files,
             "total_frames": synth_2d.shape[0],
             **dist_result,
         })
@@ -575,64 +820,41 @@ def run_evaluation_dir(
         # --------------------------------------------------------------
         # Strategy 2 — pairwise file-vs-reference comparison
         # --------------------------------------------------------------
-        synth_dir_path = Path(synth_dir)
-        wav_files = collect_wav_files(synth_dir_path)
-        work = []
-        skipped = 0
-        for wf in wav_files:
-            rel = str(wf.relative_to(synth_dir_path))
-            if (method_name, rel) in done_pairs:
-                skipped += 1
-                continue
-            work.append({"path": wf, "rel": rel})
+        if "filename" not in synth_df.columns:
+            logger.warning(
+                "No 'filename' column for method '%s', skipping pairwise",
+                method_name,
+            )
+            continue
 
-        logger.info(
-            "Strategy 2 [%s]: %d to process, %d skipped",
-            method_name, len(work), skipped,
+        groups = synth_df.groupby("filename")
+        items = (
+            tqdm(groups, desc=f"Pairwise [{method_name}]")
+            if tqdm
+            else groups
         )
-
         processed, failed = 0, 0
-        if n_workers <= 1:
-            items = tqdm(work, desc=f"Pairwise [{method_name}]") if tqdm else work
-            for item in items:
-                row = _evaluate_one_file_against_reference(
-                    item["path"], ref_2d, feat_keys, item["rel"], sr,
+        for fname, group in items:
+            try:
+                file_2d = group[available].to_numpy(dtype=np.float64)
+                if file_2d.shape[0] < 2:
+                    continue
+                distances = loss.evaluate(file_2d, ref_subset)
+                pair_rows.append({
+                    "method": method_name,
+                    "file": fname,
+                    **distances,
+                })
+                processed += 1
+            except Exception:
+                failed += 1
+                logger.warning(
+                    "Pairwise failed: %s/%s", method_name, fname, exc_info=True,
                 )
-                if row is not None:
-                    row["method"] = method_name
-                    new_pair_rows.append(row)
-                    processed += 1
-                else:
-                    failed += 1
-        else:
-            with ProcessPoolExecutor(max_workers=n_workers) as pool:
-                futures = {
-                    pool.submit(
-                        _evaluate_one_file_against_reference,
-                        item["path"], ref_2d, feat_keys, item["rel"], sr,
-                    ): item
-                    for item in work
-                }
-                items = (
-                    tqdm(
-                        as_completed(futures),
-                        desc=f"Pairwise [{method_name}]",
-                        total=len(futures),
-                    )
-                    if tqdm else as_completed(futures)
-                )
-                for future in items:
-                    row = future.result()
-                    if row is not None:
-                        row["method"] = method_name
-                        new_pair_rows.append(row)
-                        processed += 1
-                    else:
-                        failed += 1
 
         logger.info(
-            "Strategy 2 [%s] done: %d processed, %d skipped, %d failed",
-            method_name, processed, skipped, failed,
+            "Strategy 2 [%s] done: %d processed, %d failed",
+            method_name, processed, failed,
         )
 
     # ------------------------------------------------------------------
@@ -644,8 +866,7 @@ def run_evaluation_dir(
         df_dist.to_csv(dist_csv, index=False)
         logger.info("Distribution results saved → %s", dist_csv)
 
-    all_pair_rows = existing_pair_rows + new_pair_rows
-    df_pair = pd.DataFrame(all_pair_rows)
+    df_pair = pd.DataFrame(pair_rows)
     if not df_pair.empty:
         pair_csv.parent.mkdir(parents=True, exist_ok=True)
         df_pair.to_csv(pair_csv, index=False)

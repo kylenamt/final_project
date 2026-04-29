@@ -38,6 +38,10 @@ class Loss:
         RBF bandwidth (sigma).  When *None* the median heuristic is used.
     n_projections : int
         Number of random projections for sliced Wasserstein (multi-dim).
+    seed : int
+        Seed for the random projection directions used by sliced
+        Wasserstein.  Fixed so that repeated runs on the same inputs
+        return identical values.
     """
 
     def __init__(
@@ -45,12 +49,16 @@ class Loss:
         kernel: str = "rbf",
         bandwidth: Optional[float] = None,
         n_projections: int = 50,
+        batch_size: int = 2000,
+        seed: int = 0,
     ):
         if kernel != "rbf":
             raise ValueError(f"Unsupported kernel: {kernel!r}. Only 'rbf' is supported.")
         self.kernel = kernel
         self.bandwidth = bandwidth
         self.n_projections = n_projections
+        self.batch_size = batch_size
+        self.seed = seed
 
     # ------------------------------------------------------------------
     # Input validation
@@ -89,12 +97,23 @@ class Loss:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _median_heuristic(X: np.ndarray, Y: np.ndarray) -> float:
+    def _median_heuristic(
+        X: np.ndarray, Y: np.ndarray, max_samples: int = 2000
+    ) -> float:
         """Compute bandwidth via the median heuristic.
 
         Returns the median of all pairwise Euclidean distances between the
-        concatenated samples.  A small epsilon is added to avoid zero bandwidth.
+        concatenated samples.  If the combined sample count exceeds
+        *max_samples*, an equal number of samples (``max_samples // 2``) is
+        drawn from each of X and Y (deterministically, seed=0) so that
+        neither set dominates the bandwidth estimate.
         """
+        per_set = max_samples // 2
+        rng = np.random.default_rng(0)
+        if X.shape[0] > per_set:
+            X = X[rng.choice(X.shape[0], per_set, replace=False)]
+        if Y.shape[0] > per_set:
+            Y = Y[rng.choice(Y.shape[0], per_set, replace=False)]
         Z = np.concatenate([X, Y], axis=0)
         dists = cdist(Z, Z, metric="euclidean")
         # Take upper triangle (excluding diagonal zeros)
@@ -112,6 +131,41 @@ class Loss:
         """
         sq_dists = cdist(X, Y, metric="sqeuclidean")
         return np.exp(-sq_dists / (2.0 * bandwidth ** 2))
+
+    def _blockwise_kernel_sum(
+        self,
+        A: np.ndarray,
+        B: np.ndarray,
+        bandwidth: float,
+        exclude_diagonal: bool,
+    ) -> float:
+        """Sum of RBF kernel matrix K(A, B) computed block-by-block.
+
+        Peak memory is O(batch_size^2) instead of O(m * n).
+
+        Parameters
+        ----------
+        A : (m, d) array
+        B : (n, d) array
+        bandwidth : RBF sigma.
+        exclude_diagonal : If *True*, zero the diagonal within each
+            diagonal block before summing (used for the unbiased K_XX /
+            K_YY terms where A is B).
+        """
+        m, n = A.shape[0], B.shape[0]
+        bs = self.batch_size
+        total = 0.0
+
+        for i0 in range(0, m, bs):
+            i1 = min(i0 + bs, m)
+            for j0 in range(0, n, bs):
+                j1 = min(j0 + bs, n)
+                K_block = self._rbf_kernel(A[i0:i1], B[j0:j1], bandwidth)
+                if exclude_diagonal and i0 == j0:
+                    np.fill_diagonal(K_block, 0.0)
+                total += K_block.sum()
+
+        return total
 
     # ------------------------------------------------------------------
     # Public API
@@ -136,20 +190,20 @@ class Loss:
         X, Y = self._validate_inputs(X, Y)
         m, n = X.shape[0], Y.shape[0]
 
-        sigma = self.bandwidth if self.bandwidth is not None else self._median_heuristic(X, Y)
+        sigma = (
+            self.bandwidth
+            if self.bandwidth is not None
+            else self._median_heuristic(X, Y)
+        )
 
-        K_XX = self._rbf_kernel(X, X, sigma)
-        K_YY = self._rbf_kernel(Y, Y, sigma)
-        K_XY = self._rbf_kernel(X, Y, sigma)
-
-        # Unbiased estimator: exclude diagonal from K_XX and K_YY
-        np.fill_diagonal(K_XX, 0.0)
-        np.fill_diagonal(K_YY, 0.0)
+        sum_XX = self._blockwise_kernel_sum(X, X, sigma, exclude_diagonal=True)
+        sum_YY = self._blockwise_kernel_sum(Y, Y, sigma, exclude_diagonal=True)
+        sum_XY = self._blockwise_kernel_sum(X, Y, sigma, exclude_diagonal=False)
 
         mmd_sq = (
-            K_XX.sum() / (m * (m - 1))
-            + K_YY.sum() / (n * (n - 1))
-            - 2.0 * K_XY.sum() / (m * n)
+            sum_XX / (m * (m - 1))
+            + sum_YY / (n * (n - 1))
+            - 2.0 * sum_XY / (m * n)
         )
 
         return float(np.sqrt(max(mmd_sq, 0.0)))
@@ -185,7 +239,7 @@ class Loss:
         if d == 1:
             return float(_wasserstein_1d(X_2d[:, 0], Y_2d[:, 0]))
 
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(self.seed)
         directions = rng.standard_normal((self.n_projections, d))
         directions /= np.linalg.norm(directions, axis=1, keepdims=True)
 
