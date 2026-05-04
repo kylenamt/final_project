@@ -20,7 +20,16 @@ Requires [Docker](https://docs.docker.com/get-docker/) and
 (any NVIDIA driver >= 450.80).
 
 ```bash
-docker compose run --rm ddsp          # build image & drop into a shell
+# Build once
+docker compose build
+
+# Start a shell inside the container
+docker compose run --rm ddsp
+
+# or via Makefile shortcuts
+make docker-build
+make docker
+
 # or for VS Code: open the repo and select "Reopen in Container"
 ```
 
@@ -138,12 +147,10 @@ src/                          Python package
   │   ├── loss.py             MMD and Wasserstein distance metrics
   │   ├── segment.py          Audio segmentation
   │   └── timbre_metrics.py   Spectral feature extraction (pytimbre)
-  └── demo/                   Jupyter notebooks
-      ├── timbre_transfer.ipynb
-      ├── baseline_demo.ipynb
-      ├── timbre_metrics_demo.ipynb
-      ├── run_preprocessing.ipynb
-      └── check_gpu.ipynb
+  └── notebooks/              Jupyter notebooks
+      ├── demo/
+      ├── experiment/
+      └── preprocessing/
 configs/
   ├── ddsp_gin/               Gin configuration files
   │   ├── models/             Model architectures (ae.gin, solo_instrument.gin)
@@ -154,19 +161,30 @@ configs/
       └── preset.mk           Named experiment presets
 scripts/
   ├── train_ddsp.sh           Training entry point (wraps ddsp_run)
+  ├── download_from_hf.py     Download checkpoints from Hugging Face
+  ├── download_bach_violin.py Download the Bach Violin dataset
   └── upload_to_hf.py         Upload checkpoints to Hugging Face
 data/                         Audio data and TFRecords
 artifacts/                    Trained model checkpoints
-docs/                         Documentation
+docs/                         Documentation (see docs/index.md)
+  ├── setup.md                Environment setup and commands
   ├── architecture.md         Codebase architecture and module reference
-  └── evaluation.md           Evaluation pipeline reference
+  ├── data.md                 Data layout and preprocessing
+  ├── evaluation.md           Evaluation pipeline reference
+  └── scripts.md              Script reference
 Dockerfile                    GPU container (TF 2.11.1-gpu base)
 docker-compose.yml            Docker Compose with GPU support
 environment.yml               Conda environment definition
+conda-lock.txt                Conda lock file (generated)
+requirements-lock.txt         Pip lock file (generated)
 pyproject.toml                Package metadata and pip dependencies
 ```
 
 ## Documentation
 
+- [docs/index.md](docs/index.md) — documentation entry point.
+- [docs/setup.md](docs/setup.md) — environment setup and commands.
 - [docs/architecture.md](docs/architecture.md) — codebase architecture, module reference, gin configuration, and training orchestration.
+- [docs/data.md](docs/data.md) — data layout, preprocessing, and TFRecords.
 - [docs/evaluation.md](docs/evaluation.md) — evaluation pipeline: segmentation, timbre feature extraction, and distributional distance metrics.
+- [docs/scripts.md](docs/scripts.md) — script reference and examples.

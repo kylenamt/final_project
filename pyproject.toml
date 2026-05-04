@@ -25,7 +25,6 @@ dependencies = [
     "librosa",
     "tensorflow==2.11.1",
     "tensorflow-probability==0.19.0",
-    "frechet_audio_distance",
 ]
 
 [tool.setuptools]
